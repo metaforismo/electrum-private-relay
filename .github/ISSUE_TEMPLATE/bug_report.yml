@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible non-security defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not disclose vulnerabilities, raw transactions, transaction IDs,
+        addresses, onion credentials, API keys, or wallet data here.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Describe the behavior without sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Safe reproduction
+      description: Prefer regtest or testnet and redact endpoints.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Bitcoin network
+      options:
+        - regtest
+        - signet
+        - testnet
+        - mainnet
+    validations:
+      required: true
+  - type: checkboxes
+    id: sensitive
+    attributes:
+      label: Sensitive-data check
+      options:
+        - label: I removed wallet, transaction, address, IP, credential, and onion-service data.
+          required: true
