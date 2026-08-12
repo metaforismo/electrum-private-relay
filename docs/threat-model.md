@@ -30,7 +30,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
    persisted or emitted in application logs.
 5. The application listens only on loopback unless the operator explicitly
    acknowledges the risk.
-6. Concurrent connections and frame sizes remain bounded.
+6. Concurrent connections, frame sizes, response-bearing request identifiers,
+   and per-connection outstanding requests remain bounded.
 7. Relay responses are accepted only when their request ID and transaction-ID
    shape match the expected contract.
 8. Query-upstream responses are forwarded only for outstanding query IDs and
@@ -39,7 +40,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 ## Attacker goals considered
 
 - Bypass interception so a transaction reaches the normal Electrum upstream.
-- Exhaust memory or tasks with oversized frames or many connections.
+- Exhaust memory or tasks with oversized frames, many connections, or an
+  upstream that withholds responses while the wallet pipelines unique IDs.
 - Inject a fake or malformed relay response.
 - Inject an unsolicited query-upstream response that impersonates broadcast
   success.

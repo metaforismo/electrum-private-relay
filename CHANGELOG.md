@@ -13,5 +13,7 @@ stable release.
 - Fail-closed broadcast interception.
 - Reject-by-default and SOCKS5 Electrum relay adapters.
 - Bounded frames and connections.
+- Bounded request identifiers and per-connection outstanding-request window
+  with fail-closed overflow.
 - Outstanding-request correlation to block query-upstream response spoofing.
 - Initial architecture, threat model, Tor deployment, and contributor guidance.
