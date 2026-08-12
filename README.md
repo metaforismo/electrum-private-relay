@@ -73,6 +73,13 @@ cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
+The pull-request integration gate also replays source-derived Electrum,
+Sparrow, and BlueWallet protocol profiles and broadcasts a real signed regtest
+transaction into a disposable Bitcoin Core mempool. A separate scheduled smoke
+routes a broadcast through a real ephemeral v3 onion, and the parser has a
+coverage-guided fuzz target with PR smoke and weekly campaigns. See
+[integration testing](docs/testing.md) for exact commands and claim boundaries.
+
 ## Run safely
 
 The default starts on loopback and rejects broadcasts:
@@ -113,13 +120,17 @@ Implemented:
 - fail-closed relay behavior;
 - SOCKS5-to-Electrum relay adapter;
 - bounded resources and privacy-preserving operational output;
-- unit and in-memory integration tests.
+- unit and in-memory integration tests;
+- source-derived wire profiles for Electrum, Sparrow, and BlueWallet;
+- a real Bitcoin Core regtest broadcast gate; and
+- an opt-in and scheduled real Tor v3 onion smoke test; and
+- a coverage-guided Electrum frame-classifier fuzz target.
 
 Not yet implemented or claimed:
 
 - a MARA Slipstream adapter;
 - TLS termination in the application;
-- wallet-specific compatibility certification;
+- packaged-wallet UI and TLS compatibility certification;
 - multi-user authentication or tenant isolation;
 - production readiness or an independent security audit.
 

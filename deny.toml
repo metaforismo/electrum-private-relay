@@ -12,6 +12,9 @@ allow = [
   "MIT",
   "Unicode-3.0",
 ]
+exceptions = [
+  { allow = ["NCSA"], crate = "libfuzzer-sys" },
+]
 
 [bans]
 multiple-versions = "warn"

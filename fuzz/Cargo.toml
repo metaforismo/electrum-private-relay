@@ -1,0 +1,23 @@
+[package]
+name = "electrum-private-relay-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+electrum-private-relay = { path = "..", version = "0.1.0" }
+libfuzzer-sys = "0.4.13"
+
+[[bin]]
+name = "classify_frame"
+path = "fuzz_targets/classify_frame.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

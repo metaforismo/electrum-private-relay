@@ -65,7 +65,13 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Unit tests exercise strict parsing and configuration validation.
 - An in-memory integration test proves that normal queries reach the upstream
   while a broadcast is handled by the relay and is not observed upstream.
-- CI runs formatting, tests, Clippy, dependency policy, and pull-request
+- Source-derived Electrum, Sparrow, and BlueWallet wire profiles exercise
+  handshake, query, and isolated broadcast behavior.
+- A Docker-backed Bitcoin Core regtest test proves that a real signed
+  transaction reaches a mempool only through the selected relay path.
+- A scheduled smoke test routes through a real ephemeral v3 onion, and bounded
+  PR plus weekly fuzz campaigns exercise the wallet-frame parser.
+- CI also runs formatting, tests, Clippy, dependency policy, and pull-request
   dependency review.
-- Real-wallet compatibility, Tor integration, regtest behavior, fuzzing, and an
-  independent audit remain release gates.
+- Packaged-wallet UI and TLS certification and an independent audit remain
+  external release gates.

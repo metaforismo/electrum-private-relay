@@ -85,9 +85,12 @@ its own invariants or misrepresents a boundary.
 ## Known Limitations and Compensating Controls
 
 The current upstream transport is plain TCP and is intended for a local
-self-hosted Electrum server. Application TLS termination, real-wallet
-compatibility certification, fuzzing, regtest integration, a stable Slipstream
-adapter, and an independent security audit are not complete.
+self-hosted Electrum server. Application TLS termination, packaged-wallet UI
+and TLS compatibility certification, a stable Slipstream adapter, and an
+independent security audit are not complete. Source-derived wallet protocol
+profiles, real Bitcoin Core regtest broadcast, and a scheduled real Tor onion
+smoke test are automated. The frame classifier also has bounded PR fuzzing and
+a longer weekly campaign. These controls do not replace external assurances.
 
 Compensating defaults are loopback-only listening, client-authenticated onion
 deployment guidance, reject-by-default broadcast behavior, one relay per

@@ -21,6 +21,11 @@ cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
+Changes to protocol framing or relay routing should also run the source-derived
+wallet profiles. Changes to broadcast behavior should run the Docker-backed
+Bitcoin Core regtest gate. Tor transport changes should run the real onion smoke.
+See `docs/testing.md` for the exact commands and environment requirements.
+
 Changes to parsing, routing, relay adapters, logging, configuration, or network
 exposure require tests covering both success and fail-closed behavior. A provider
 adapter must also update `docs/relay-adapters.md` with trust and correlation

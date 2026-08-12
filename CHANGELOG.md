@@ -16,4 +16,8 @@ stable release.
 - Bounded request identifiers and per-connection outstanding-request window
   with fail-closed overflow.
 - Outstanding-request correlation to block query-upstream response spoofing.
+- Source-derived Electrum, Sparrow, and BlueWallet wire-profile tests.
+- Docker-backed Bitcoin Core 30.2 regtest broadcast gate.
+- Scheduled and manually runnable real Tor v3 onion smoke test.
+- Coverage-guided fuzz target and CI campaigns for wallet frame classification.
 - Initial architecture, threat model, Tor deployment, and contributor guidance.
