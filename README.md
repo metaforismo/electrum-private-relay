@@ -126,13 +126,18 @@ Implemented:
 - an opt-in and scheduled real Tor v3 onion smoke test; and
 - a coverage-guided Electrum frame-classifier fuzz target.
 
-Not yet implemented or claimed:
+Tracked release gates:
 
-- a MARA Slipstream adapter;
-- TLS termination in the application;
-- packaged-wallet UI and TLS compatibility certification;
-- multi-user authentication or tenant isolation;
-- production readiness or an independent security audit.
+- an opt-in MARA Slipstream adapter after its external provider gate
+  ([#4](https://github.com/metaforismo/electrum-private-relay/issues/4));
+- packaged-wallet UI and transport compatibility certification
+  ([#5](https://github.com/metaforismo/electrum-private-relay/issues/5)); and
+- an independent review and stable-release security gate
+  ([#6](https://github.com/metaforismo/electrum-private-relay/issues/6)).
+
+Application TLS termination, public clearnet hosting, multi-user authentication,
+and tenant isolation are not supported by the current self-hosted onion-service
+scope. Adding any of them requires a separate threat model and security review.
 
 See the [architecture](docs/architecture.md), [threat model](docs/threat-model.md),
 and [relay adapter contract](docs/relay-adapters.md) before deploying.
@@ -141,7 +146,7 @@ and [relay adapter contract](docs/relay-adapters.md) before deploying.
 
 Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 Please do not disclose suspected vulnerabilities in a public issue; follow the
-private reporting process in `SECURITY.md` once it is published.
+private reporting process in [SECURITY.md](SECURITY.md).
 
 ## License
 
