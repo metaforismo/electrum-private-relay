@@ -17,7 +17,8 @@ use tokio::{
 use crate::{
     config::Config,
     protocol::{
-        ClientFrame, classify, invalid_frame_response, relay_error_response, success_response,
+        ClientFrame, classify, invalid_frame_response, pending_request_limit_response,
+        relay_error_response, success_response,
     },
     relay::{RelayErrorKind, SharedRelay},
 };
@@ -35,6 +36,13 @@ enum FinishedTask {
 enum PendingRequest {
     Upstream,
     Broadcast,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Reservation {
+    Reserved,
+    Duplicate,
+    LimitExceeded,
 }
 
 type PendingRequests = Arc<Mutex<HashMap<String, PendingRequest>>>;
@@ -106,7 +114,14 @@ where
                 return;
             };
 
-            let _ = proxy_streams(client, upstream, task_relay, task_config.max_frame_bytes).await;
+            let _ = proxy_streams(
+                client,
+                upstream,
+                task_relay,
+                task_config.max_frame_bytes,
+                task_config.max_pending_requests,
+            )
+            .await;
         });
     }
 }
@@ -116,6 +131,7 @@ async fn proxy_streams<C, U>(
     upstream: U,
     relay: SharedRelay,
     max_frame_bytes: usize,
+    max_pending_requests: usize,
 ) -> io::Result<()>
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -140,6 +156,7 @@ where
         relay,
         pending_requests,
         max_frame_bytes,
+        max_pending_requests,
     ));
     drop(client_output);
 
@@ -228,6 +245,7 @@ async fn handle_client_frames<R, W>(
     relay: SharedRelay,
     pending_requests: PendingRequests,
     max_frame_bytes: usize,
+    max_pending_requests: usize,
 ) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -249,9 +267,25 @@ where
             Ok(ClientFrame::Passthrough { id }) => {
                 if let Some(id) = id {
                     let key = request_id_key(&id).expect("validated request ID");
-                    if !reserve_request(&pending_requests, key, PendingRequest::Upstream).await {
-                        let _ = client_output.send(invalid_frame_response()).await;
-                        return Ok(());
+                    match reserve_request(
+                        &pending_requests,
+                        key,
+                        PendingRequest::Upstream,
+                        max_pending_requests,
+                    )
+                    .await
+                    {
+                        Reservation::Reserved => {}
+                        Reservation::Duplicate => {
+                            let _ = client_output.send(invalid_frame_response()).await;
+                            return Ok(());
+                        }
+                        Reservation::LimitExceeded => {
+                            let _ = client_output
+                                .send(pending_request_limit_response(&id))
+                                .await;
+                            return Ok(());
+                        }
                     }
                 }
                 upstream_writer.write_all(&frame).await?;
@@ -261,11 +295,27 @@ where
                 raw_transaction,
             }) => {
                 let broadcast_key = request_id_key(&id);
-                if let Some(key) = broadcast_key.clone()
-                    && !reserve_request(&pending_requests, key, PendingRequest::Broadcast).await
-                {
-                    let _ = client_output.send(invalid_frame_response()).await;
-                    return Ok(());
+                if let Some(key) = broadcast_key.clone() {
+                    match reserve_request(
+                        &pending_requests,
+                        key,
+                        PendingRequest::Broadcast,
+                        max_pending_requests,
+                    )
+                    .await
+                    {
+                        Reservation::Reserved => {}
+                        Reservation::Duplicate => {
+                            let _ = client_output.send(invalid_frame_response()).await;
+                            return Ok(());
+                        }
+                        Reservation::LimitExceeded => {
+                            let _ = client_output
+                                .send(pending_request_limit_response(&id))
+                                .await;
+                            return Ok(());
+                        }
+                    }
                 }
                 let response = match relay.broadcast(&raw_transaction).await {
                     Ok(transaction_id) => success_response(&id, &transaction_id),
@@ -292,15 +342,17 @@ async fn reserve_request(
     pending_requests: &PendingRequests,
     key: String,
     request: PendingRequest,
-) -> bool {
+    max_pending_requests: usize,
+) -> Reservation {
     let mut pending = pending_requests.lock().await;
-    match pending.entry(key) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(request);
-            true
-        }
-        std::collections::hash_map::Entry::Occupied(_) => false,
+    if pending.contains_key(&key) {
+        return Reservation::Duplicate;
     }
+    if pending.len() >= max_pending_requests {
+        return Reservation::LimitExceeded;
+    }
+    pending.insert(key, request);
+    Reservation::Reserved
 }
 
 fn request_id_key(id: &Value) -> Option<String> {
@@ -392,6 +444,7 @@ mod tests {
             proxy_upstream,
             shared_relay,
             4_096,
+            16,
         ));
         let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
         let (upstream_reader, mut upstream_writer) = tokio::io::split(upstream);
@@ -455,7 +508,13 @@ mod tests {
         let (wallet, proxy_client) = duplex(16 * 1024);
         let (proxy_upstream, upstream) = duplex(16 * 1024);
         let relay: SharedRelay = Arc::new(RejectRelay);
-        let proxy = tokio::spawn(proxy_streams(proxy_client, proxy_upstream, relay, 4_096));
+        let proxy = tokio::spawn(proxy_streams(
+            proxy_client,
+            proxy_upstream,
+            relay,
+            4_096,
+            16,
+        ));
         let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
         let (upstream_reader, _upstream_writer) = tokio::io::split(upstream);
         let mut wallet_reader = BufReader::new(wallet_reader);
@@ -500,6 +559,7 @@ mod tests {
             proxy_upstream,
             shared_relay,
             4_096,
+            16,
         ));
         let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
         let mut wallet_reader = BufReader::new(wallet_reader);
@@ -528,6 +588,156 @@ mod tests {
 
         drop(wallet_writer);
         drop(upstream);
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn closes_connection_when_pending_request_window_is_full() {
+        let (wallet, proxy_client) = duplex(16 * 1024);
+        let (proxy_upstream, upstream) = duplex(16 * 1024);
+        let relay: SharedRelay = Arc::new(RejectRelay);
+        let proxy = tokio::spawn(proxy_streams(proxy_client, proxy_upstream, relay, 4_096, 2));
+        let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
+        let (upstream_reader, _upstream_writer) = tokio::io::split(upstream);
+        let mut wallet_reader = BufReader::new(wallet_reader);
+        let mut upstream_reader = BufReader::new(upstream_reader);
+
+        for id in 1..=3 {
+            wallet_writer
+                .write_all(
+                    format!("{{\"id\":{id},\"method\":\"server.version\",\"params\":[]}}\n")
+                        .as_bytes(),
+                )
+                .await
+                .expect("wallet request");
+        }
+
+        for expected_id in 1..=2 {
+            let mut observed = String::new();
+            upstream_reader
+                .read_line(&mut observed)
+                .await
+                .expect("accepted upstream request");
+            assert!(observed.contains(&format!("\"id\":{expected_id}")));
+        }
+
+        let mut response = String::new();
+        timeout(
+            Duration::from_secs(1),
+            wallet_reader.read_line(&mut response),
+        )
+        .await
+        .expect("limit response timeout")
+        .expect("limit response");
+        assert!(response.contains("\"id\":3"));
+        assert!(response.contains("\"code\":-32092"));
+
+        let mut unexpected = String::new();
+        let bytes_read = timeout(
+            Duration::from_secs(1),
+            upstream_reader.read_line(&mut unexpected),
+        )
+        .await
+        .expect("upstream did not close")
+        .expect("upstream close");
+        assert_eq!(bytes_read, 0);
+
+        proxy.await.expect("proxy task").expect("proxy result");
+    }
+
+    #[tokio::test]
+    async fn does_not_relay_broadcast_when_pending_request_window_is_full() {
+        let (wallet, proxy_client) = duplex(16 * 1024);
+        let (proxy_upstream, upstream) = duplex(16 * 1024);
+        let relay = Arc::new(MockRelay::default());
+        let shared_relay: SharedRelay = relay.clone();
+        let proxy = tokio::spawn(proxy_streams(
+            proxy_client,
+            proxy_upstream,
+            shared_relay,
+            4_096,
+            1,
+        ));
+        let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
+        let (upstream_reader, _upstream_writer) = tokio::io::split(upstream);
+        let mut wallet_reader = BufReader::new(wallet_reader);
+        let mut upstream_reader = BufReader::new(upstream_reader);
+
+        let query = b"{\"id\":1,\"method\":\"server.version\",\"params\":[]}\n";
+        wallet_writer.write_all(query).await.expect("wallet query");
+        let mut observed = Vec::new();
+        upstream_reader
+            .read_until(b'\n', &mut observed)
+            .await
+            .expect("upstream query");
+        assert_eq!(observed, query);
+
+        wallet_writer
+            .write_all(
+                b"{\"id\":2,\"method\":\"blockchain.transaction.broadcast\",\"params\":[\"00aa\"]}\n",
+            )
+            .await
+            .expect("broadcast request");
+
+        let mut response = String::new();
+        wallet_reader
+            .read_line(&mut response)
+            .await
+            .expect("limit response");
+        assert!(response.contains("\"id\":2"));
+        assert!(response.contains("\"code\":-32092"));
+        assert_eq!(relay.calls.load(Ordering::SeqCst), 0);
+
+        let mut leaked = Vec::new();
+        let bytes_read = upstream_reader
+            .read_until(b'\n', &mut leaked)
+            .await
+            .expect("upstream close");
+        assert_eq!(bytes_read, 0);
+
+        proxy.await.expect("proxy task").expect("proxy result");
+    }
+
+    #[tokio::test]
+    async fn correlated_response_releases_pending_request_slot() {
+        let (wallet, proxy_client) = duplex(16 * 1024);
+        let (proxy_upstream, upstream) = duplex(16 * 1024);
+        let relay: SharedRelay = Arc::new(RejectRelay);
+        let proxy = tokio::spawn(proxy_streams(proxy_client, proxy_upstream, relay, 4_096, 1));
+        let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
+        let (upstream_reader, mut upstream_writer) = tokio::io::split(upstream);
+        let mut wallet_reader = BufReader::new(wallet_reader);
+        let mut upstream_reader = BufReader::new(upstream_reader);
+
+        for id in 1..=2 {
+            let request = format!("{{\"id\":{id},\"method\":\"server.version\",\"params\":[]}}\n");
+            wallet_writer
+                .write_all(request.as_bytes())
+                .await
+                .expect("wallet request");
+
+            let mut observed = String::new();
+            upstream_reader
+                .read_line(&mut observed)
+                .await
+                .expect("upstream request");
+            assert_eq!(observed, request);
+
+            upstream_writer
+                .write_all(format!("{{\"id\":{id},\"result\":true}}\n").as_bytes())
+                .await
+                .expect("upstream response");
+            let mut response = String::new();
+            wallet_reader
+                .read_line(&mut response)
+                .await
+                .expect("wallet response");
+            assert!(response.contains(&format!("\"id\":{id}")));
+            assert!(response.contains("\"result\":true"));
+        }
+
+        drop(wallet_writer);
+        drop(upstream_writer);
         proxy.abort();
     }
 }

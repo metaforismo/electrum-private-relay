@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub const BROADCAST_METHOD: &str = "blockchain.transaction.broadcast";
+pub const MAX_REQUEST_ID_STRING_BYTES: usize = 256;
 
 #[derive(Debug, PartialEq)]
 pub enum ClientFrame {
@@ -49,7 +50,14 @@ struct Request {
 pub fn classify(frame: &[u8]) -> Result<ClientFrame, ProtocolError> {
     let request = serde_json::from_slice::<Request>(frame).map_err(|_| invalid_request())?;
     let id = match request.id {
-        Some(id @ (Value::Number(_) | Value::String(_))) => Some(id),
+        Some(id @ Value::Number(_)) => Some(id),
+        Some(id @ Value::String(_))
+            if id
+                .as_str()
+                .is_some_and(|value| value.len() <= MAX_REQUEST_ID_STRING_BYTES) =>
+        {
+            Some(id)
+        }
         Some(_) => return Err(invalid_request()),
         None => None,
     };
@@ -107,6 +115,17 @@ pub fn invalid_frame_response() -> Vec<u8> {
     invalid_request().response()
 }
 
+#[must_use]
+pub fn pending_request_limit_response(id: &Value) -> Vec<u8> {
+    encode_response(&json!({
+        "id": id,
+        "error": {
+            "code": -32_092,
+            "message": "too many pending requests",
+        }
+    }))
+}
+
 fn invalid_request() -> ProtocolError {
     ProtocolError {
         id: Value::Null,
@@ -133,7 +152,7 @@ fn encode_response(value: &Value) -> Vec<u8> {
 mod tests {
     use serde_json::Value;
 
-    use super::{ClientFrame, classify};
+    use super::{ClientFrame, MAX_REQUEST_ID_STRING_BYTES, classify};
 
     #[test]
     fn intercepts_array_and_legacy_string_broadcast_params() {
@@ -183,5 +202,13 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_oversized_string_request_ids() {
+        let oversized_id = "a".repeat(MAX_REQUEST_ID_STRING_BYTES + 1);
+        let request =
+            format!("{{\"id\":\"{oversized_id}\",\"method\":\"server.version\",\"params\":[]}}");
+        assert!(classify(request.as_bytes()).is_err());
     }
 }

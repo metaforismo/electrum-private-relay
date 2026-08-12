@@ -27,7 +27,12 @@ connection.
 The proxy records outstanding query request IDs. A response is forwarded only
 when its ID belongs to a query actually sent upstream; notifications remain
 allowed. IDs reserved by an intercepted broadcast cannot be satisfied by the
-query upstream. Unsolicited and colliding responses are dropped.
+query upstream. Unsolicited and colliding responses are dropped. Each wallet
+connection has a configurable in-flight request window (1,024 by default,
+16,384 maximum); exhausting it rejects the new request and closes the
+connection. String request IDs are limited to 256 UTF-8 bytes so the table has
+a meaningful byte bound as well as an entry bound. A correlated response
+releases its slot before it is forwarded.
 
 ## Components
 
@@ -36,6 +41,7 @@ query upstream. Unsolicited and colliding responses are dropped.
 - TCP on loopback by default.
 - Explicit acknowledgement required for a non-loopback bind.
 - Fixed maximum concurrent connection count.
+- Fixed maximum response-bearing requests awaiting replies per connection.
 - No peer-address logging.
 
 ### Frame boundary
@@ -75,6 +81,8 @@ and then drops the connection.
 - No request bodies or identifiers in application logs.
 - No unsolicited query-upstream responses or response-ID collisions.
 - No unbounded frame reads.
+- No unbounded outstanding-request tables.
+- No oversized response-bearing request identifiers.
 - No application-level TLS or public listener by default.
 - No `unsafe` Rust.
 - Locked dependency graph and automated advisory/license/source checks.

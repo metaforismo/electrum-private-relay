@@ -37,7 +37,8 @@ wallet -- Electrum TCP --> proxy -- read/query methods --> Electrum upstream
 - Defaults to `reject`, so broadcast fails until a private relay is configured.
 - Does not persist raw transactions, transaction IDs, wallet queries, addresses,
   IP addresses, or connection metadata.
-- Uses bounded newline-delimited frames and a bounded connection pool.
+- Uses bounded newline-delimited frames, a bounded connection pool, and a
+  bounded per-connection window of response-bearing requests.
 - Correlates upstream response IDs and drops unsolicited responses or responses
   that collide with an intercepted broadcast.
 - Rejects malformed or batched client requests rather than risk bypassing the
@@ -80,6 +81,12 @@ The default starts on loopback and rejects broadcasts:
 cargo run --locked -- \
   --upstream 127.0.0.1:50001
 ```
+
+Each wallet connection may have at most 1,024 response-bearing requests in
+flight by default. Operators can lower this with `--max-pending-requests`; the
+hard configuration ceiling is 16,384. String request IDs are limited to 256
+UTF-8 bytes. Reaching either boundary fails closed and closes that wallet
+connection after a generic error.
 
 To use a separate Electrum relay over Tor SOCKS5:
 
