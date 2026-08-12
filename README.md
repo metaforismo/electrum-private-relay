@@ -85,8 +85,9 @@ cargo run --locked -- \
 Each wallet connection may have at most 1,024 response-bearing requests in
 flight by default. Operators can lower this with `--max-pending-requests`; the
 hard configuration ceiling is 16,384. String request IDs are limited to 256
-UTF-8 bytes. Reaching either boundary fails closed and closes that wallet
-connection after a generic error.
+UTF-8 bytes; numeric IDs must be integers representable as signed or unsigned
+64-bit values. Reaching a limit or using an ambiguous ID fails closed and
+closes that wallet connection after a generic error.
 
 To use a separate Electrum relay over Tor SOCKS5:
 

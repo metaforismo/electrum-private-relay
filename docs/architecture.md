@@ -30,9 +30,11 @@ allowed. IDs reserved by an intercepted broadcast cannot be satisfied by the
 query upstream. Unsolicited and colliding responses are dropped. Each wallet
 connection has a configurable in-flight request window (1,024 by default,
 16,384 maximum); exhausting it rejects the new request and closes the
-connection. String request IDs are limited to 256 UTF-8 bytes so the table has
-a meaningful byte bound as well as an entry bound. A correlated response
-releases its slot before it is forwarded.
+connection. String request IDs are limited to 256 UTF-8 bytes, while numeric
+IDs must be exactly representable as signed or unsigned 64-bit integers. These
+constraints give the table a meaningful byte bound and prevent JSON-number
+normalization from making distinct IDs collide. A correlated response releases
+its slot before it is forwarded.
 
 ## Components
 

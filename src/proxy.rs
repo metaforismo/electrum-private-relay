@@ -17,8 +17,8 @@ use tokio::{
 use crate::{
     config::Config,
     protocol::{
-        ClientFrame, classify, invalid_frame_response, pending_request_limit_response,
-        relay_error_response, success_response,
+        ClientFrame, classify, invalid_frame_response, is_valid_request_id,
+        pending_request_limit_response, relay_error_response, success_response,
     },
     relay::{RelayErrorKind, SharedRelay},
 };
@@ -119,7 +119,7 @@ where
                 upstream,
                 task_relay,
                 task_config.max_frame_bytes,
-                task_config.max_pending_requests,
+                task_config.max_pending_requests.get(),
             )
             .await;
         });
@@ -214,8 +214,10 @@ where
         let envelope = serde_json::from_slice::<UpstreamEnvelope>(&frame)
             .map_err(|_| invalid_upstream_frame())?;
         let should_forward = match (envelope.id, envelope.method) {
-            (Some(id @ (Value::Number(_) | Value::String(_))), None) => {
-                let key = request_id_key(&id).expect("validated request ID");
+            (Some(id), None) => {
+                let Some(key) = request_id_key(&id) else {
+                    return Err(invalid_upstream_frame());
+                };
                 let mut pending = pending_requests.lock().await;
                 match pending.get(&key) {
                     Some(PendingRequest::Upstream) => {
@@ -356,10 +358,11 @@ async fn reserve_request(
 }
 
 fn request_id_key(id: &Value) -> Option<String> {
-    match id {
-        Value::Number(_) | Value::String(_) => serde_json::to_string(id).ok(),
-        _ => None,
-    }
+    is_valid_request_id(id)
+        .then(|| serde_json::to_string(id))
+        .transpose()
+        .ok()
+        .flatten()
 }
 
 fn invalid_upstream_frame() -> io::Error {
@@ -739,5 +742,90 @@ mod tests {
         drop(wallet_writer);
         drop(upstream_writer);
         proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_inexact_numeric_id_before_forwarding_to_upstream() {
+        let (wallet, proxy_client) = duplex(16 * 1024);
+        let (proxy_upstream, upstream) = duplex(16 * 1024);
+        let relay: SharedRelay = Arc::new(RejectRelay);
+        let proxy = tokio::spawn(proxy_streams(
+            proxy_client,
+            proxy_upstream,
+            relay,
+            4_096,
+            16,
+        ));
+        let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
+        let (upstream_reader, _upstream_writer) = tokio::io::split(upstream);
+        let mut wallet_reader = BufReader::new(wallet_reader);
+        let mut upstream_reader = BufReader::new(upstream_reader);
+
+        wallet_writer
+            .write_all(
+                b"{\"id\":18446744073709551616,\"method\":\"server.version\",\"params\":[]}\n",
+            )
+            .await
+            .expect("wallet request");
+
+        let mut response = String::new();
+        wallet_reader
+            .read_line(&mut response)
+            .await
+            .expect("invalid request response");
+        assert!(response.contains("\"code\":-32600"));
+
+        let mut leaked = String::new();
+        let bytes_read = upstream_reader
+            .read_line(&mut leaked)
+            .await
+            .expect("upstream close");
+        assert_eq!(bytes_read, 0);
+
+        proxy.await.expect("proxy task").expect("proxy result");
+    }
+
+    #[tokio::test]
+    async fn closes_cleanly_on_inexact_numeric_id_from_upstream() {
+        let (wallet, proxy_client) = duplex(16 * 1024);
+        let (proxy_upstream, upstream) = duplex(16 * 1024);
+        let relay: SharedRelay = Arc::new(RejectRelay);
+        let proxy = tokio::spawn(proxy_streams(
+            proxy_client,
+            proxy_upstream,
+            relay,
+            4_096,
+            16,
+        ));
+        let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
+        let (upstream_reader, mut upstream_writer) = tokio::io::split(upstream);
+        let mut wallet_reader = BufReader::new(wallet_reader);
+        let mut upstream_reader = BufReader::new(upstream_reader);
+
+        let query = b"{\"id\":1,\"method\":\"server.version\",\"params\":[]}\n";
+        wallet_writer.write_all(query).await.expect("wallet query");
+        let mut observed = Vec::new();
+        upstream_reader
+            .read_until(b'\n', &mut observed)
+            .await
+            .expect("upstream query");
+        assert_eq!(observed, query);
+
+        upstream_writer
+            .write_all(b"{\"id\":18446744073709551616,\"result\":true}\n")
+            .await
+            .expect("invalid upstream response");
+
+        let mut response = String::new();
+        let bytes_read = timeout(
+            Duration::from_secs(1),
+            wallet_reader.read_line(&mut response),
+        )
+        .await
+        .expect("wallet did not close")
+        .expect("wallet close");
+        assert_eq!(bytes_read, 0);
+
+        proxy.await.expect("proxy task").expect("proxy result");
     }
 }

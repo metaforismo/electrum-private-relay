@@ -50,14 +50,7 @@ struct Request {
 pub fn classify(frame: &[u8]) -> Result<ClientFrame, ProtocolError> {
     let request = serde_json::from_slice::<Request>(frame).map_err(|_| invalid_request())?;
     let id = match request.id {
-        Some(id @ Value::Number(_)) => Some(id),
-        Some(id @ Value::String(_))
-            if id
-                .as_str()
-                .is_some_and(|value| value.len() <= MAX_REQUEST_ID_STRING_BYTES) =>
-        {
-            Some(id)
-        }
+        Some(id) if is_valid_request_id(&id) => Some(id),
         Some(_) => return Err(invalid_request()),
         None => None,
     };
@@ -87,6 +80,17 @@ pub fn classify(frame: &[u8]) -> Result<ClientFrame, ProtocolError> {
         id,
         raw_transaction,
     })
+}
+
+/// Returns whether an Electrum response-bearing request ID has an exact,
+/// bounded representation suitable for correlation.
+#[must_use]
+pub(crate) fn is_valid_request_id(id: &Value) -> bool {
+    match id {
+        Value::Number(number) => number.is_i64() || number.is_u64(),
+        Value::String(value) => value.len() <= MAX_REQUEST_ID_STRING_BYTES,
+        _ => false,
+    }
 }
 
 #[must_use]
@@ -210,5 +214,21 @@ mod tests {
         let request =
             format!("{{\"id\":\"{oversized_id}\",\"method\":\"server.version\",\"params\":[]}}");
         assert!(classify(request.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn accepts_exact_integer_request_ids_and_rejects_inexact_numbers() {
+        let maximum = br#"{"id":18446744073709551615,"method":"server.version","params":[]}"#;
+        assert_eq!(
+            classify(maximum),
+            Ok(ClientFrame::Passthrough {
+                id: Some(Value::from(u64::MAX)),
+            })
+        );
+
+        let above_u64 = br#"{"id":18446744073709551616,"method":"server.version","params":[]}"#;
+        let fractional = br#"{"id":1.5,"method":"server.version","params":[]}"#;
+        assert!(classify(above_u64).is_err());
+        assert!(classify(fractional).is_err());
     }
 }

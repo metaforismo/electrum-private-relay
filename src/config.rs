@@ -11,6 +11,20 @@ pub const MAX_CONFIGURABLE_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_PENDING_REQUESTS: usize = 1_024;
 pub const MAX_CONFIGURABLE_PENDING_REQUESTS: usize = 16 * 1024;
 
+/// A validated per-connection limit for response-bearing requests.
+///
+/// The inner value is private so library users cannot construct a [`Config`]
+/// that bypasses the same hard ceiling enforced by the command-line parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingRequestLimit(usize);
+
+impl PendingRequestLimit {
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum RelayMode {
     Reject,
@@ -81,7 +95,7 @@ pub struct Config {
     pub relay_endpoint: Option<Endpoint>,
     pub socks5_proxy: SocketAddr,
     pub max_connections: usize,
-    pub max_pending_requests: usize,
+    pub max_pending_requests: PendingRequestLimit,
     pub max_frame_bytes: usize,
     pub connect_timeout: Duration,
     pub relay_timeout: Duration,
@@ -98,6 +112,19 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+impl TryFrom<usize> for PendingRequestLimit {
+    type Error = ConfigError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        if !(1..=MAX_CONFIGURABLE_PENDING_REQUESTS).contains(&value) {
+            return Err(ConfigError(format!(
+                "max pending requests must be between 1 and {MAX_CONFIGURABLE_PENDING_REQUESTS}"
+            )));
+        }
+        Ok(Self(value))
+    }
+}
+
 impl TryFrom<Cli> for Config {
     type Error = ConfigError;
 
@@ -112,11 +139,7 @@ impl TryFrom<Cli> for Config {
                 "max connections must be greater than zero".into(),
             ));
         }
-        if !(1..=MAX_CONFIGURABLE_PENDING_REQUESTS).contains(&cli.max_pending_requests) {
-            return Err(ConfigError(format!(
-                "max pending requests must be between 1 and {MAX_CONFIGURABLE_PENDING_REQUESTS}"
-            )));
-        }
+        let max_pending_requests = PendingRequestLimit::try_from(cli.max_pending_requests)?;
         if !(1_024..=MAX_CONFIGURABLE_FRAME_BYTES).contains(&cli.max_frame_bytes) {
             return Err(ConfigError(format!(
                 "max frame bytes must be between 1024 and {MAX_CONFIGURABLE_FRAME_BYTES}"
@@ -138,7 +161,7 @@ impl TryFrom<Cli> for Config {
             relay_endpoint: cli.relay_endpoint,
             socks5_proxy: cli.socks5_proxy,
             max_connections: cli.max_connections,
-            max_pending_requests: cli.max_pending_requests,
+            max_pending_requests,
             max_frame_bytes: cli.max_frame_bytes,
             connect_timeout: Duration::from_secs(cli.connect_timeout_seconds),
             relay_timeout: Duration::from_secs(cli.relay_timeout_seconds),
@@ -152,7 +175,7 @@ mod tests {
 
     use super::{
         Cli, Config, DEFAULT_MAX_FRAME_BYTES, DEFAULT_MAX_PENDING_REQUESTS,
-        MAX_CONFIGURABLE_PENDING_REQUESTS, RelayMode,
+        MAX_CONFIGURABLE_PENDING_REQUESTS, PendingRequestLimit, RelayMode,
     };
     use crate::endpoint::Endpoint;
 
@@ -195,5 +218,17 @@ mod tests {
         let mut excessive = cli();
         excessive.max_pending_requests = MAX_CONFIGURABLE_PENDING_REQUESTS + 1;
         assert!(Config::try_from(excessive).is_err());
+    }
+
+    #[test]
+    fn pending_request_limit_cannot_exceed_the_hard_ceiling() {
+        assert!(PendingRequestLimit::try_from(0).is_err());
+        assert_eq!(
+            PendingRequestLimit::try_from(DEFAULT_MAX_PENDING_REQUESTS)
+                .expect("default pending request limit")
+                .get(),
+            DEFAULT_MAX_PENDING_REQUESTS
+        );
+        assert!(PendingRequestLimit::try_from(MAX_CONFIGURABLE_PENDING_REQUESTS + 1).is_err());
     }
 }
