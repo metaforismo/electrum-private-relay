@@ -48,8 +48,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check advisories, licenses, bans, and sources
+      - name: Check main crate advisories, licenses, bans, and sources
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
           arguments: --all-features
+
+      - name: Check fuzz crate advisories, licenses, bans, and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
+          manifest-path: fuzz/Cargo.toml
