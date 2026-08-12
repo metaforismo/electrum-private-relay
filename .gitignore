@@ -1,4 +1,9 @@
 /target/
+/fuzz/artifacts/
+/fuzz/coverage/
+/fuzz/target/
+__pycache__/
+*.py[cod]
 *.profraw
 .DS_Store
 .env

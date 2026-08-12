@@ -1,0 +1,48 @@
+name: Fuzz
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "fuzz/**"
+      - "src/protocol.rs"
+      - ".github/workflows/fuzz.yml"
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  classify-frame:
+    name: Electrum frame classifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-08-12
+
+      - name: Install pinned cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Fuzz the frame classifier
+        run: >-
+          cargo +nightly-2026-08-12 fuzz run classify_frame
+          fuzz/corpus/classify_frame
+          -- -max_total_time=${{ github.event_name == 'schedule' && '300' || '30' }}
+          -timeout=5
