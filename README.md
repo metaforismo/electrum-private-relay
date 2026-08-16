@@ -39,6 +39,8 @@ wallet -- Electrum TCP --> proxy -- read/query methods --> Electrum upstream
   IP addresses, or connection metadata.
 - Uses bounded newline-delimited frames, a bounded connection pool, and a
   bounded per-connection window of response-bearing requests.
+- Limits simultaneous relay submissions across the entire process and rejects
+  overload immediately without a queue or a call to the configured relay.
 - Correlates upstream response IDs and drops unsolicited responses or responses
   that collide with an intercepted broadcast.
 - Rejects malformed or batched client requests rather than risk bypassing the
@@ -90,7 +92,9 @@ cargo clippy --locked --all-targets -- -D warnings
 
 The Rust suite includes black-box CLI checks proving that configuration-only
 validation exits without binding or connecting and that unsafe loops, endpoint
-reuse, zero ports, and ambiguous endpoint syntax fail closed.
+reuse, zero ports, ambiguous endpoint syntax, and invalid resource limits fail
+closed. A controlled asynchronous relay test proves that saturation does not
+call the wrapped relay and that releasing a permit restores service.
 
 The pull-request integration gate also replays source-derived Electrum,
 Sparrow, and BlueWallet protocol profiles and broadcasts a real signed regtest
@@ -122,8 +126,22 @@ The default connection pool is 128 and the hard configuration ceiling is
 in flight by default. Operators can lower this with `--max-pending-requests`;
 the hard configuration ceiling is 16,384. String request IDs are limited to 256
 UTF-8 bytes; numeric IDs must be integers representable as signed or unsigned
-64-bit values. Reaching a limit or using an ambiguous ID fails closed and
-closes that wallet connection after a generic error.
+64-bit values. Reaching a per-connection request limit or using an ambiguous ID
+fails closed and closes that wallet connection after a generic error.
+
+At most eight broadcasts may be inside a private relay submission at once by
+default. Configure this with `--max-concurrent-broadcasts` or
+`EPR_MAX_CONCURRENT_BROADCASTS`. The numeric hard ceiling is 1,024, but the
+product of that value and `--max-frame-bytes` may never exceed 128 MiB. With the
+default 2 MiB frame limit, at most 64 slots can be configured; with the 16 MiB
+maximum frame size, at most eight can be configured. These products bound input
+payload volume rather than promising an exact process-RSS ceiling.
+
+There is deliberately no overload queue. When every process-wide broadcast slot
+is occupied, the new request receives the existing generic private-relay error,
+the selected adapter is not called, the query upstream sees no transaction, and
+no fallback is attempted. The wallet connection remains available for later
+requests.
 
 To use a separate Electrum relay over Tor SOCKS5:
 
@@ -132,7 +150,8 @@ cargo run --locked -- \
   --upstream 127.0.0.1:50001 \
   --relay-mode socks-electrum \
   --relay-endpoint examplehiddenservice.onion:50001 \
-  --socks5-proxy 127.0.0.1:9050
+  --socks5-proxy 127.0.0.1:9050 \
+  --max-concurrent-broadcasts 4
 ```
 
 The relay endpoint must be distinct from the query upstream and neither may
@@ -152,7 +171,9 @@ Implemented:
 - query-response ID correlation that blocks upstream broadcast spoofing;
 - fail-closed relay behavior;
 - SOCKS5-to-Electrum relay adapter;
-- bounded resources and privacy-preserving operational output;
+- bounded connections, frames, request tables, and process-wide relay
+  submissions with an aggregate payload budget;
+- privacy-preserving operational output;
 - offline configuration validation, strict endpoint syntax, and obvious
   endpoint-loop guardrails;
 - unit, black-box CLI, and in-memory integration tests;
