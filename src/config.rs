@@ -14,6 +14,7 @@ pub const DEFAULT_MAX_PENDING_REQUESTS: usize = 1_024;
 pub const MAX_CONFIGURABLE_PENDING_REQUESTS: usize = 16 * 1024;
 pub const DEFAULT_MAX_CONCURRENT_BROADCASTS: usize = 8;
 pub const MAX_CONFIGURABLE_CONCURRENT_BROADCASTS: usize = 1_024;
+pub const MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES: usize = 128 * 1024 * 1024;
 
 /// A validated per-connection limit for response-bearing requests.
 ///
@@ -210,6 +211,15 @@ impl TryFrom<Cli> for Config {
                 "max frame bytes must be between 1024 and {MAX_CONFIGURABLE_FRAME_BYTES}"
             )));
         }
+        let maximum_in_flight_broadcast_bytes = cli
+            .max_concurrent_broadcasts
+            .checked_mul(cli.max_frame_bytes)
+            .ok_or_else(|| ConfigError("broadcast payload budget overflowed".into()))?;
+        if maximum_in_flight_broadcast_bytes > MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES {
+            return Err(ConfigError(format!(
+                "max concurrent broadcasts multiplied by max frame bytes must not exceed {MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES}"
+            )));
+        }
         if cli.connect_timeout_seconds == 0 || cli.relay_timeout_seconds == 0 {
             return Err(ConfigError("timeouts must be greater than zero".into()));
         }
@@ -371,6 +381,10 @@ mod tests {
         excessive_broadcasts.max_concurrent_broadcasts =
             MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1;
         assert!(Config::try_from(excessive_broadcasts).is_err());
+
+        let mut excessive_broadcast_payload = cli();
+        excessive_broadcast_payload.max_concurrent_broadcasts = 65;
+        assert!(Config::try_from(excessive_broadcast_payload).is_err());
 
         let mut zero_pending = cli();
         zero_pending.max_pending_requests = 0;
