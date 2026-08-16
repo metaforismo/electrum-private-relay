@@ -38,7 +38,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
    per-connection outstanding requests, and simultaneous relay submissions
    remain bounded.
 7. The configured broadcast concurrency multiplied by the maximum frame size
-   remains within a fixed aggregate input-payload budget.
+   remains within a fixed aggregate input-payload budget, and runtime admission
+   independently accounts for the actual raw-transaction bytes in relay calls.
 8. Relay overload is rejected immediately without queueing, invoking the
    selected adapter, leaking to the query upstream, or attempting fallback.
 9. Relay responses are accepted only when their request ID and transaction-ID
@@ -58,6 +59,7 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Hold many slow private relay submissions open across separate wallet
   connections to exhaust sockets, tasks, memory, Tor circuits, or provider
   capacity.
+- Bypass CLI-only configuration checks through direct use of the Rust library.
 - Inject a fake or malformed relay response.
 - Inject an unsolicited query-upstream response that impersonates broadcast
   success.
@@ -98,20 +100,25 @@ operator review.
 
 ## Relay saturation boundary
 
-Every process wraps its selected relay in one semaphore-backed limiter. A permit
-is acquired with a non-blocking operation immediately before the adapter is
-called and is held until the adapter returns. The default is eight simultaneous
-submissions. A saturated request receives the same generic private-relay failure
-as other relay errors; its transaction is not queued, sent to the adapter, or
-forwarded elsewhere.
+Every process wraps its selected relay in one admission layer with two
+semaphores. A request-slot permit and a number of byte permits equal to the
+raw-transaction string length are acquired with non-blocking operations
+immediately before the adapter is called. Both are held until the adapter
+returns. The default request limit is eight simultaneous submissions; the byte
+budget is fixed at 128 MiB.
 
-The 128 MiB product check bounds the sum of configured maximum input frame sizes
-that can be inside relay submissions at one time. It is not an exact resident-
-memory promise: JSON parsing, serialization, transport buffers, task state, and
-third-party libraries may hold additional copies or overhead. A compromised or
-slow relay can still consume all permitted slots until the configured relay
-timeout expires, causing temporary fail-closed unavailability rather than
-unbounded growth.
+A saturated request receives the same generic private-relay failure as other
+relay errors. Its transaction is not queued, sent to the adapter, or forwarded
+elsewhere. The runtime byte semaphore remains effective even when an embedding
+application constructs `Config` directly instead of using `Cli::try_from`.
+
+The configuration product check bounds the sum of configured maximum input
+frames, while the runtime byte permits bound actual raw-transaction strings
+inside relay calls. Neither is an exact resident-memory promise: JSON parsing,
+serialization, transport buffers, task state, and third-party libraries may
+hold additional copies or overhead. A compromised or slow relay can still
+consume all permitted slots until the configured relay timeout expires, causing
+temporary fail-closed unavailability rather than unbounded growth.
 
 ## Out of scope for the current milestone
 
@@ -131,9 +138,9 @@ unbounded growth.
 - Unit tests exercise strict parsing, zero-port rejection, bounded
   configuration, aggregate payload budgeting, endpoint alias checks, and
   listener-loop/query-relay rejection.
-- A controlled asynchronous relay test holds one submission open, proves the
-  next request fails without calling the wrapped adapter, then releases the
-  permit and proves the first request completes.
+- Controlled asynchronous relay tests separately saturate the request-slot and
+  actual-payload-byte budgets, prove the wrapped adapter is not called, release
+  the held permits, and prove the admitted request completes.
 - Black-box CLI tests prove `--check-config` exits successfully without network
   setup and fails closed on representative unsafe, ambiguous, or zero-valued
   endpoint and resource configurations.
