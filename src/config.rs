@@ -8,6 +8,8 @@ use crate::endpoint::Endpoint;
 
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_CONFIGURABLE_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_MAX_CONNECTIONS: usize = 128;
+pub const MAX_CONFIGURABLE_CONNECTIONS: usize = 16 * 1024;
 pub const DEFAULT_MAX_PENDING_REQUESTS: usize = 1_024;
 pub const MAX_CONFIGURABLE_PENDING_REQUESTS: usize = 16 * 1024;
 
@@ -34,6 +36,10 @@ pub enum RelayMode {
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
 pub struct Cli {
+    /// Validate configuration and exit before binding or connecting.
+    #[arg(long, env = "EPR_CHECK_CONFIG", default_value_t = false)]
+    pub check_config: bool,
+
     /// Client-facing Electrum TCP listener.
     #[arg(long, env = "EPR_LISTEN", default_value = "127.0.0.1:50003")]
     pub listen: SocketAddr,
@@ -55,7 +61,7 @@ pub struct Cli {
     pub socks5_proxy: SocketAddr,
 
     /// Maximum concurrent wallet connections.
-    #[arg(long, env = "EPR_MAX_CONNECTIONS", default_value_t = 128)]
+    #[arg(long, env = "EPR_MAX_CONNECTIONS", default_value_t = DEFAULT_MAX_CONNECTIONS)]
     pub max_connections: usize,
 
     /// Maximum response-bearing requests awaiting a reply per wallet connection.
@@ -134,10 +140,15 @@ impl TryFrom<Cli> for Config {
                 "refusing a non-loopback listener without --allow-non-loopback-listen".into(),
             ));
         }
-        if cli.max_connections == 0 {
+        if cli.upstream.could_target_listener(cli.listen) {
             return Err(ConfigError(
-                "max connections must be greater than zero".into(),
+                "query upstream must not target the client listener".into(),
             ));
+        }
+        if !(1..=MAX_CONFIGURABLE_CONNECTIONS).contains(&cli.max_connections) {
+            return Err(ConfigError(format!(
+                "max connections must be between 1 and {MAX_CONFIGURABLE_CONNECTIONS}"
+            )));
         }
         let max_pending_requests = PendingRequestLimit::try_from(cli.max_pending_requests)?;
         if !(1_024..=MAX_CONFIGURABLE_FRAME_BYTES).contains(&cli.max_frame_bytes) {
@@ -148,10 +159,28 @@ impl TryFrom<Cli> for Config {
         if cli.connect_timeout_seconds == 0 || cli.relay_timeout_seconds == 0 {
             return Err(ConfigError("timeouts must be greater than zero".into()));
         }
-        if cli.relay_mode == RelayMode::SocksElectrum && cli.relay_endpoint.is_none() {
-            return Err(ConfigError(
-                "socks-electrum mode requires --relay-endpoint".into(),
-            ));
+
+        if cli.relay_mode == RelayMode::SocksElectrum {
+            let relay_endpoint = cli.relay_endpoint.as_ref().ok_or_else(|| {
+                ConfigError("socks-electrum mode requires --relay-endpoint".into())
+            })?;
+            if relay_endpoint.same_target(&cli.upstream) {
+                return Err(ConfigError(
+                    "private relay endpoint must differ from the query upstream".into(),
+                ));
+            }
+            if relay_endpoint.could_target_listener(cli.listen) {
+                return Err(ConfigError(
+                    "private relay endpoint must not target the client listener".into(),
+                ));
+            }
+            let socks_endpoint =
+                Endpoint::new(cli.socks5_proxy.ip().to_string(), cli.socks5_proxy.port());
+            if socks_endpoint.could_target_listener(cli.listen) {
+                return Err(ConfigError(
+                    "SOCKS5 proxy must not target the client listener".into(),
+                ));
+            }
         }
 
         Ok(Self {
@@ -174,19 +203,21 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::{
-        Cli, Config, DEFAULT_MAX_FRAME_BYTES, DEFAULT_MAX_PENDING_REQUESTS,
+        Cli, Config, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_FRAME_BYTES,
+        DEFAULT_MAX_PENDING_REQUESTS, MAX_CONFIGURABLE_CONNECTIONS,
         MAX_CONFIGURABLE_PENDING_REQUESTS, PendingRequestLimit, RelayMode,
     };
     use crate::endpoint::Endpoint;
 
     fn cli() -> Cli {
         Cli {
+            check_config: false,
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 50_003),
             upstream: Endpoint::new("127.0.0.1", 50_001),
             relay_mode: RelayMode::Reject,
             relay_endpoint: None,
             socks5_proxy: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9_050),
-            max_connections: 128,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
             max_pending_requests: DEFAULT_MAX_PENDING_REQUESTS,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             connect_timeout_seconds: 10,
@@ -203,6 +234,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_query_upstream_listener_loop() {
+        let mut input = cli();
+        input.upstream = Endpoint::new("localhost", input.listen.port());
+        assert!(Config::try_from(input).is_err());
+    }
+
+    #[test]
     fn requires_relay_endpoint_for_socks_mode() {
         let mut input = cli();
         input.relay_mode = RelayMode::SocksElectrum;
@@ -210,14 +248,52 @@ mod tests {
     }
 
     #[test]
-    fn bounds_pending_request_configuration() {
-        let mut zero = cli();
-        zero.max_pending_requests = 0;
-        assert!(Config::try_from(zero).is_err());
+    fn requires_query_and_relay_endpoint_separation() {
+        let mut input = cli();
+        input.relay_mode = RelayMode::SocksElectrum;
+        input.relay_endpoint = Some(Endpoint::new("localhost", 50_001));
+        assert!(Config::try_from(input).is_err());
+    }
 
-        let mut excessive = cli();
-        excessive.max_pending_requests = MAX_CONFIGURABLE_PENDING_REQUESTS + 1;
-        assert!(Config::try_from(excessive).is_err());
+    #[test]
+    fn rejects_relay_or_socks_listener_loops() {
+        let mut relay_loop = cli();
+        relay_loop.relay_mode = RelayMode::SocksElectrum;
+        relay_loop.relay_endpoint = Some(Endpoint::new("127.0.0.1", 50_003));
+        assert!(Config::try_from(relay_loop).is_err());
+
+        let mut socks_loop = cli();
+        socks_loop.relay_mode = RelayMode::SocksElectrum;
+        socks_loop.relay_endpoint = Some(Endpoint::new("relay.example", 50_001));
+        socks_loop.socks5_proxy = socks_loop.listen;
+        assert!(Config::try_from(socks_loop).is_err());
+    }
+
+    #[test]
+    fn accepts_distinct_socks_relay_configuration() {
+        let mut input = cli();
+        input.relay_mode = RelayMode::SocksElectrum;
+        input.relay_endpoint = Some(Endpoint::new("relay.example", 50_001));
+        assert!(Config::try_from(input).is_ok());
+    }
+
+    #[test]
+    fn bounds_connection_and_pending_request_configuration() {
+        let mut zero_connections = cli();
+        zero_connections.max_connections = 0;
+        assert!(Config::try_from(zero_connections).is_err());
+
+        let mut excessive_connections = cli();
+        excessive_connections.max_connections = MAX_CONFIGURABLE_CONNECTIONS + 1;
+        assert!(Config::try_from(excessive_connections).is_err());
+
+        let mut zero_pending = cli();
+        zero_pending.max_pending_requests = 0;
+        assert!(Config::try_from(zero_pending).is_err());
+
+        let mut excessive_pending = cli();
+        excessive_pending.max_pending_requests = MAX_CONFIGURABLE_PENDING_REQUESTS + 1;
+        assert!(Config::try_from(excessive_pending).is_err());
     }
 
     #[test]
