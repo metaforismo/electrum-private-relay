@@ -71,3 +71,14 @@ fn check_config_rejects_url_instead_of_host_port() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("endpoint must use host:port without scheme, credentials, or path"));
 }
+
+#[test]
+fn check_config_rejects_zero_concurrent_broadcast_limit() {
+    let output = binary()
+        .args(["--check-config", "--max-concurrent-broadcasts", "0"])
+        .output()
+        .expect("binary should run");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("max concurrent broadcasts must be between 1"));
+}
