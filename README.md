@@ -45,6 +45,13 @@ wallet -- Electrum TCP --> proxy -- read/query methods --> Electrum upstream
   broadcast interceptor.
 - Keeps private relay failures fail-closed: the wallet receives an error and no
   public fallback is attempted.
+- Rejects obvious configuration loops into the client listener and obvious
+  query/relay endpoint reuse before any socket is opened.
+
+The endpoint guardrails compare literal IPs, loopback aliases, DNS case, and a
+trailing root dot. They intentionally do not resolve DNS and therefore do not
+prevent DNS rebinding, split-horizon aliases, or every operator error. Review
+the resolved deployment topology independently.
 
 These properties do **not** make upstream wallet queries private. The configured
 Electrum upstream still observes the wallet's query set. Use a self-hosted
@@ -73,6 +80,10 @@ cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
+The Rust suite includes black-box CLI checks proving that configuration-only
+validation exits without binding or connecting and that obvious loop/reuse
+configurations fail closed.
+
 The pull-request integration gate also replays source-derived Electrum,
 Sparrow, and BlueWallet protocol profiles and broadcasts a real signed regtest
 transaction into a disposable Bitcoin Core mempool. A separate scheduled smoke
@@ -82,16 +93,26 @@ coverage-guided fuzz target with PR smoke and weekly campaigns. See
 
 ## Run safely
 
-The default starts on loopback and rejects broadcasts:
+Validate the complete CLI/environment configuration without opening a listener,
+connecting to the query upstream, or contacting the SOCKS proxy:
+
+```bash
+cargo run --locked -- \
+  --check-config \
+  --upstream 127.0.0.1:50001
+```
+
+The default runtime starts on loopback and rejects broadcasts:
 
 ```bash
 cargo run --locked -- \
   --upstream 127.0.0.1:50001
 ```
 
-Each wallet connection may have at most 1,024 response-bearing requests in
-flight by default. Operators can lower this with `--max-pending-requests`; the
-hard configuration ceiling is 16,384. String request IDs are limited to 256
+The default connection pool is 128 and the hard configuration ceiling is
+16,384. Each wallet connection may have at most 1,024 response-bearing requests
+in flight by default. Operators can lower this with `--max-pending-requests`;
+the hard configuration ceiling is 16,384. String request IDs are limited to 256
 UTF-8 bytes; numeric IDs must be integers representable as signed or unsigned
 64-bit values. Reaching a limit or using an ambiguous ID fails closed and
 closes that wallet connection after a generic error.
@@ -105,6 +126,10 @@ cargo run --locked -- \
   --relay-endpoint examplehiddenservice.onion:50001 \
   --socks5-proxy 127.0.0.1:9050
 ```
+
+The relay endpoint must be distinct from the query upstream and neither may
+obviously point back to the client listener. The SOCKS proxy address must also
+be distinct from that listener.
 
 Do not expose the application port directly to the internet. For remote wallet
 access, keep the loopback listener and publish it as a client-authenticated v3
@@ -120,9 +145,10 @@ Implemented:
 - fail-closed relay behavior;
 - SOCKS5-to-Electrum relay adapter;
 - bounded resources and privacy-preserving operational output;
-- unit and in-memory integration tests;
+- offline configuration validation and obvious endpoint-loop guardrails;
+- unit, black-box CLI, and in-memory integration tests;
 - source-derived wire profiles for Electrum, Sparrow, and BlueWallet;
-- a real Bitcoin Core regtest broadcast gate; and
+- a real Bitcoin Core regtest broadcast gate;
 - an opt-in and scheduled real Tor v3 onion smoke test; and
 - a coverage-guided Electrum frame-classifier fuzz target.
 
