@@ -15,6 +15,8 @@ stable release.
 - Bounded frames and connections.
 - Bounded request identifiers and per-connection outstanding-request window
   with fail-closed overflow.
+- Process-wide fail-closed broadcast concurrency and aggregate input-payload
+  limits without overload queueing or relay fallback.
 - Outstanding-request correlation to block query-upstream response spoofing.
 - Offline `--check-config` validation and obvious listener-loop/query-relay
   separation guardrails.

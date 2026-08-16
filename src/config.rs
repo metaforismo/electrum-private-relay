@@ -12,6 +12,9 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 128;
 pub const MAX_CONFIGURABLE_CONNECTIONS: usize = 16 * 1024;
 pub const DEFAULT_MAX_PENDING_REQUESTS: usize = 1_024;
 pub const MAX_CONFIGURABLE_PENDING_REQUESTS: usize = 16 * 1024;
+pub const DEFAULT_MAX_CONCURRENT_BROADCASTS: usize = 8;
+pub const MAX_CONFIGURABLE_CONCURRENT_BROADCASTS: usize = 1_024;
+pub const MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES: usize = 128 * 1024 * 1024;
 
 /// A validated per-connection limit for response-bearing requests.
 ///
@@ -21,6 +24,20 @@ pub const MAX_CONFIGURABLE_PENDING_REQUESTS: usize = 16 * 1024;
 pub struct PendingRequestLimit(usize);
 
 impl PendingRequestLimit {
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// A validated process-wide limit for simultaneous private relay submissions.
+///
+/// The inner value is private so the relay limiter cannot be constructed with
+/// zero permits or with a value above the documented hard ceiling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConcurrentBroadcastLimit(usize);
+
+impl ConcurrentBroadcastLimit {
     #[must_use]
     pub const fn get(self) -> usize {
         self.0
@@ -64,6 +81,14 @@ pub struct Cli {
     #[arg(long, env = "EPR_MAX_CONNECTIONS", default_value_t = DEFAULT_MAX_CONNECTIONS)]
     pub max_connections: usize,
 
+    /// Maximum simultaneous private relay submissions across all connections.
+    #[arg(
+        long,
+        env = "EPR_MAX_CONCURRENT_BROADCASTS",
+        default_value_t = DEFAULT_MAX_CONCURRENT_BROADCASTS
+    )]
+    pub max_concurrent_broadcasts: usize,
+
     /// Maximum response-bearing requests awaiting a reply per wallet connection.
     #[arg(
         long,
@@ -101,6 +126,7 @@ pub struct Config {
     pub relay_endpoint: Option<Endpoint>,
     pub socks5_proxy: SocketAddr,
     pub max_connections: usize,
+    pub max_concurrent_broadcasts: ConcurrentBroadcastLimit,
     pub max_pending_requests: PendingRequestLimit,
     pub max_frame_bytes: usize,
     pub connect_timeout: Duration,
@@ -125,6 +151,19 @@ impl TryFrom<usize> for PendingRequestLimit {
         if !(1..=MAX_CONFIGURABLE_PENDING_REQUESTS).contains(&value) {
             return Err(ConfigError(format!(
                 "max pending requests must be between 1 and {MAX_CONFIGURABLE_PENDING_REQUESTS}"
+            )));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<usize> for ConcurrentBroadcastLimit {
+    type Error = ConfigError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        if !(1..=MAX_CONFIGURABLE_CONCURRENT_BROADCASTS).contains(&value) {
+            return Err(ConfigError(format!(
+                "max concurrent broadcasts must be between 1 and {MAX_CONFIGURABLE_CONCURRENT_BROADCASTS}"
             )));
         }
         Ok(Self(value))
@@ -164,10 +203,21 @@ impl TryFrom<Cli> for Config {
                 "max connections must be between 1 and {MAX_CONFIGURABLE_CONNECTIONS}"
             )));
         }
+        let max_concurrent_broadcasts =
+            ConcurrentBroadcastLimit::try_from(cli.max_concurrent_broadcasts)?;
         let max_pending_requests = PendingRequestLimit::try_from(cli.max_pending_requests)?;
         if !(1_024..=MAX_CONFIGURABLE_FRAME_BYTES).contains(&cli.max_frame_bytes) {
             return Err(ConfigError(format!(
                 "max frame bytes must be between 1024 and {MAX_CONFIGURABLE_FRAME_BYTES}"
+            )));
+        }
+        let maximum_in_flight_broadcast_bytes = cli
+            .max_concurrent_broadcasts
+            .checked_mul(cli.max_frame_bytes)
+            .ok_or_else(|| ConfigError("broadcast payload budget overflowed".into()))?;
+        if maximum_in_flight_broadcast_bytes > MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES {
+            return Err(ConfigError(format!(
+                "max concurrent broadcasts multiplied by max frame bytes must not exceed {MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES}"
             )));
         }
         if cli.connect_timeout_seconds == 0 || cli.relay_timeout_seconds == 0 {
@@ -204,6 +254,7 @@ impl TryFrom<Cli> for Config {
             relay_endpoint: cli.relay_endpoint,
             socks5_proxy: cli.socks5_proxy,
             max_connections: cli.max_connections,
+            max_concurrent_broadcasts,
             max_pending_requests,
             max_frame_bytes: cli.max_frame_bytes,
             connect_timeout: Duration::from_secs(cli.connect_timeout_seconds),
@@ -217,8 +268,9 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::{
-        Cli, Config, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_FRAME_BYTES,
-        DEFAULT_MAX_PENDING_REQUESTS, MAX_CONFIGURABLE_CONNECTIONS,
+        Cli, ConcurrentBroadcastLimit, Config, DEFAULT_MAX_CONCURRENT_BROADCASTS,
+        DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_FRAME_BYTES, DEFAULT_MAX_PENDING_REQUESTS,
+        MAX_CONFIGURABLE_CONCURRENT_BROADCASTS, MAX_CONFIGURABLE_CONNECTIONS,
         MAX_CONFIGURABLE_PENDING_REQUESTS, PendingRequestLimit, RelayMode,
     };
     use crate::endpoint::Endpoint;
@@ -232,6 +284,7 @@ mod tests {
             relay_endpoint: None,
             socks5_proxy: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9_050),
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_concurrent_broadcasts: DEFAULT_MAX_CONCURRENT_BROADCASTS,
             max_pending_requests: DEFAULT_MAX_PENDING_REQUESTS,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             connect_timeout_seconds: 10,
@@ -311,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn bounds_connection_and_pending_request_configuration() {
+    fn bounds_resource_configuration() {
         let mut zero_connections = cli();
         zero_connections.max_connections = 0;
         assert!(Config::try_from(zero_connections).is_err());
@@ -319,6 +372,18 @@ mod tests {
         let mut excessive_connections = cli();
         excessive_connections.max_connections = MAX_CONFIGURABLE_CONNECTIONS + 1;
         assert!(Config::try_from(excessive_connections).is_err());
+
+        let mut zero_broadcasts = cli();
+        zero_broadcasts.max_concurrent_broadcasts = 0;
+        assert!(Config::try_from(zero_broadcasts).is_err());
+
+        let mut excessive_broadcasts = cli();
+        excessive_broadcasts.max_concurrent_broadcasts = MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1;
+        assert!(Config::try_from(excessive_broadcasts).is_err());
+
+        let mut excessive_broadcast_payload = cli();
+        excessive_broadcast_payload.max_concurrent_broadcasts = 65;
+        assert!(Config::try_from(excessive_broadcast_payload).is_err());
 
         let mut zero_pending = cli();
         zero_pending.max_pending_requests = 0;
@@ -330,7 +395,18 @@ mod tests {
     }
 
     #[test]
-    fn pending_request_limit_cannot_exceed_the_hard_ceiling() {
+    fn validated_limits_cannot_exceed_hard_ceilings() {
+        assert!(ConcurrentBroadcastLimit::try_from(0).is_err());
+        assert_eq!(
+            ConcurrentBroadcastLimit::try_from(DEFAULT_MAX_CONCURRENT_BROADCASTS)
+                .expect("default concurrent broadcast limit")
+                .get(),
+            DEFAULT_MAX_CONCURRENT_BROADCASTS
+        );
+        assert!(
+            ConcurrentBroadcastLimit::try_from(MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1).is_err()
+        );
+
         assert!(PendingRequestLimit::try_from(0).is_err());
         assert_eq!(
             PendingRequestLimit::try_from(DEFAULT_MAX_PENDING_REQUESTS)

@@ -8,7 +8,7 @@ use clap::Parser;
 use electrum_private_relay::{
     config::{Cli, Config, RelayMode},
     proxy::serve_until,
-    relay::{RejectRelay, SharedRelay, SocksElectrumRelay},
+    relay::{LimitedRelay, RejectRelay, SharedRelay, SocksElectrumRelay},
 };
 
 #[tokio::main]
@@ -42,6 +42,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             config.relay_timeout,
         )),
     };
+    let relay: SharedRelay = Arc::new(LimitedRelay::new(relay, config.max_concurrent_broadcasts));
 
     println!(
         "electrum-private-relay listening on {}; sensitive request logging is disabled",
