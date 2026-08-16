@@ -123,6 +123,16 @@ impl FromStr for Endpoint {
         if value.trim() != value || value.is_empty() {
             return Err(EndpointParseError("endpoint must not be empty or padded"));
         }
+        if has_forbidden_endpoint_syntax(value) {
+            return Err(EndpointParseError(
+                "endpoint must use host:port without scheme, credentials, or path",
+            ));
+        }
+        if value.bytes().filter(|byte| *byte == b':').count() > 1 && !value.starts_with('[') {
+            return Err(EndpointParseError(
+                "IPv6 endpoints must use bracketed host:port syntax",
+            ));
+        }
 
         if let Ok(socket) = value.parse::<SocketAddr>() {
             let endpoint = Self::new(socket.ip().to_string(), socket.port());
@@ -142,16 +152,19 @@ impl FromStr for Endpoint {
     }
 }
 
+fn has_forbidden_endpoint_syntax(value: &str) -> bool {
+    value.contains("://")
+        || value.contains('@')
+        || value.contains('/')
+        || value.contains('?')
+        || value.contains('#')
+}
+
 fn validate_host(host: &str) -> Result<(), EndpointParseError> {
     if host.is_empty() || host.chars().any(char::is_whitespace) {
         return Err(EndpointParseError("endpoint host is invalid"));
     }
-    if host.contains("://")
-        || host.contains('@')
-        || host.contains('/')
-        || host.contains('?')
-        || host.contains('#')
-    {
+    if has_forbidden_endpoint_syntax(host) {
         return Err(EndpointParseError(
             "endpoint must use host:port without scheme, credentials, or path",
         ));
