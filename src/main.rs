@@ -23,7 +23,16 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::try_from(Cli::parse())?;
+    let cli = Cli::parse();
+    let check_config = cli.check_config;
+    let config = Config::try_from(cli)?;
+    if check_config {
+        println!(
+            "configuration valid; no listener was bound and no network connection was opened"
+        );
+        return Ok(());
+    }
+
     let relay: SharedRelay = match config.relay_mode {
         RelayMode::Reject => Arc::new(RejectRelay),
         RelayMode::SocksElectrum => Arc::new(SocksElectrumRelay::new(
