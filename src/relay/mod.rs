@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+mod limited;
 mod reject;
 mod socks_electrum;
 
@@ -7,6 +8,7 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 
+pub use limited::LimitedRelay;
 pub use reject::RejectRelay;
 pub use socks_electrum::SocksElectrumRelay;
 
