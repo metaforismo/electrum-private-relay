@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
 use super::{BroadcastRelay, RelayError, SharedRelay};
-use crate::config::{
-    ConcurrentBroadcastLimit, MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES,
-};
+use crate::config::{ConcurrentBroadcastLimit, MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES};
 
 /// Process-wide fail-closed limiter for private relay submissions.
 ///
@@ -22,11 +20,7 @@ pub struct LimitedRelay {
 impl LimitedRelay {
     #[must_use]
     pub fn new(inner: SharedRelay, limit: ConcurrentBroadcastLimit) -> Self {
-        Self::with_payload_budget(
-            inner,
-            limit,
-            MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES,
-        )
+        Self::with_payload_budget(inner, limit, MAX_CONFIGURABLE_IN_FLIGHT_BROADCAST_BYTES)
     }
 
     fn with_payload_budget(
@@ -45,8 +39,8 @@ impl LimitedRelay {
 #[async_trait]
 impl BroadcastRelay for LimitedRelay {
     async fn broadcast(&self, raw_transaction: &str) -> Result<String, RelayError> {
-        let payload_permits = u32::try_from(raw_transaction.len())
-            .map_err(|_| RelayError::failed())?;
+        let payload_permits =
+            u32::try_from(raw_transaction.len()).map_err(|_| RelayError::failed())?;
         let _request = self
             .requests
             .try_acquire()
