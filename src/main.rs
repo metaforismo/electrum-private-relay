@@ -42,10 +42,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             config.relay_timeout,
         )),
     };
-    let relay: SharedRelay = Arc::new(LimitedRelay::new(
-        relay,
-        config.max_concurrent_broadcasts,
-    ));
+    let relay: SharedRelay = Arc::new(LimitedRelay::new(relay, config.max_concurrent_broadcasts));
 
     println!(
         "electrum-private-relay listening on {}; sensitive request logging is disabled",
