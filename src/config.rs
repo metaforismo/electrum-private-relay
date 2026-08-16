@@ -378,8 +378,7 @@ mod tests {
         assert!(Config::try_from(zero_broadcasts).is_err());
 
         let mut excessive_broadcasts = cli();
-        excessive_broadcasts.max_concurrent_broadcasts =
-            MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1;
+        excessive_broadcasts.max_concurrent_broadcasts = MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1;
         assert!(Config::try_from(excessive_broadcasts).is_err());
 
         let mut excessive_broadcast_payload = cli();
@@ -405,8 +404,7 @@ mod tests {
             DEFAULT_MAX_CONCURRENT_BROADCASTS
         );
         assert!(
-            ConcurrentBroadcastLimit::try_from(MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1)
-                .is_err()
+            ConcurrentBroadcastLimit::try_from(MAX_CONFIGURABLE_CONCURRENT_BROADCASTS + 1).is_err()
         );
 
         assert!(PendingRequestLimit::try_from(0).is_err());
