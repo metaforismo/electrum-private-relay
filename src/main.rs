@@ -27,9 +27,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let check_config = cli.check_config;
     let config = Config::try_from(cli)?;
     if check_config {
-        println!(
-            "configuration valid; no listener was bound and no network connection was opened"
-        );
+        println!("configuration valid; no listener was bound and no network connection was opened");
         return Ok(());
     }
 
