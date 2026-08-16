@@ -44,7 +44,10 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tokio::sync::Notify;
+    use tokio::{
+        sync::Notify,
+        time::{Duration, timeout},
+    };
 
     use super::*;
     use crate::relay::RelayErrorKind;
@@ -78,9 +81,13 @@ mod tests {
             let relay = Arc::clone(&relay);
             tokio::spawn(async move { relay.broadcast("00").await })
         };
-        inner.started.notified().await;
+        timeout(Duration::from_secs(1), inner.started.notified())
+            .await
+            .unwrap_or_else(|_| unreachable!("first relay call starts"));
 
-        let second = relay.broadcast("11").await;
+        let second = timeout(Duration::from_secs(1), relay.broadcast("11"))
+            .await
+            .unwrap_or_else(|_| unreachable!("saturated relay fails immediately"));
         assert!(matches!(
             second,
             Err(error) if error.kind() == RelayErrorKind::Failed
@@ -88,9 +95,11 @@ mod tests {
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
 
         inner.release.notify_one();
-        let first_result = first
+        let first_join = timeout(Duration::from_secs(1), first)
             .await
-            .unwrap_or_else(|error| unreachable!("relay task joins: {error}"));
+            .unwrap_or_else(|_| unreachable!("first relay call completes"));
+        let first_result =
+            first_join.unwrap_or_else(|error| unreachable!("relay task joins: {error}"));
         assert!(first_result.is_ok());
     }
 }
