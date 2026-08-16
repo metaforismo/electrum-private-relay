@@ -145,6 +145,16 @@ fn validate_host(host: &str) -> Result<(), EndpointParseError> {
     if host.is_empty() || host.chars().any(char::is_whitespace) {
         return Err(EndpointParseError("endpoint host is invalid"));
     }
+    if host.contains("://")
+        || host.contains('@')
+        || host.contains('/')
+        || host.contains('?')
+        || host.contains('#')
+    {
+        return Err(EndpointParseError(
+            "endpoint must use host:port without scheme, credentials, or path",
+        ));
+    }
     if host.parse::<IpAddr>().is_ok() {
         return Ok(());
     }
