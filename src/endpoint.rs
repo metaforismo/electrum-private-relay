@@ -31,6 +31,18 @@ impl Endpoint {
         self.port
     }
 
+    /// Validate an endpoint created programmatically.
+    ///
+    /// CLI parsing applies the same validation automatically. DNS names must be
+    /// ASCII hostnames (internationalized names must use their punycode form),
+    /// while IPv6 literals must use bracketed `host:port` syntax when parsed.
+    pub(crate) fn validate(&self) -> Result<(), EndpointParseError> {
+        if self.port == 0 {
+            return Err(EndpointParseError("endpoint port must be non-zero"));
+        }
+        validate_host(&self.host)
+    }
+
     /// Returns whether two endpoint spellings identify the same obvious target.
     ///
     /// This handles exact IPs, loopback aliases, DNS case, and a trailing DNS
@@ -72,6 +84,7 @@ impl Endpoint {
             return false;
         };
         endpoint_ip == listener.ip()
+            || (endpoint_ip.is_loopback() && listener.ip().is_loopback())
             || (listener.ip().is_unspecified()
                 && (endpoint_ip.is_loopback() || endpoint_ip.is_unspecified()))
             || (endpoint_ip.is_unspecified() && listener.ip().is_loopback())
@@ -110,28 +123,83 @@ impl FromStr for Endpoint {
         if value.trim() != value || value.is_empty() {
             return Err(EndpointParseError("endpoint must not be empty or padded"));
         }
+        if has_forbidden_endpoint_syntax(value) {
+            return Err(EndpointParseError(
+                "endpoint must use host:port without scheme, credentials, or path",
+            ));
+        }
+        if value.bytes().filter(|byte| *byte == b':').count() > 1 && !value.starts_with('[') {
+            return Err(EndpointParseError(
+                "IPv6 endpoints must use bracketed host:port syntax",
+            ));
+        }
 
         if let Ok(socket) = value.parse::<SocketAddr>() {
-            return Ok(Self::new(socket.ip().to_string(), socket.port()));
+            let endpoint = Self::new(socket.ip().to_string(), socket.port());
+            endpoint.validate()?;
+            return Ok(endpoint);
         }
 
         let (host, port) = value
             .rsplit_once(':')
             .ok_or(EndpointParseError("endpoint must use host:port syntax"))?;
-        let host = host.trim_matches(['[', ']']);
-        if host.is_empty() || host.chars().any(char::is_whitespace) {
-            return Err(EndpointParseError("endpoint host is invalid"));
-        }
-
         let port = port
             .parse::<u16>()
             .map_err(|_| EndpointParseError("endpoint port is invalid"))?;
-        if port == 0 {
-            return Err(EndpointParseError("endpoint port must be non-zero"));
-        }
-
-        Ok(Self::new(host, port))
+        let endpoint = Self::new(host, port);
+        endpoint.validate()?;
+        Ok(endpoint)
     }
+}
+
+fn has_forbidden_endpoint_syntax(value: &str) -> bool {
+    value.contains("://")
+        || value.contains('@')
+        || value.contains('/')
+        || value.contains('?')
+        || value.contains('#')
+}
+
+fn validate_host(host: &str) -> Result<(), EndpointParseError> {
+    if host.is_empty() || host.chars().any(char::is_whitespace) {
+        return Err(EndpointParseError("endpoint host is invalid"));
+    }
+    if has_forbidden_endpoint_syntax(host) {
+        return Err(EndpointParseError(
+            "endpoint must use host:port without scheme, credentials, or path",
+        ));
+    }
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    if !host.is_ascii() {
+        return Err(EndpointParseError(
+            "endpoint DNS host must use ASCII or punycode",
+        ));
+    }
+    if host.contains(':') {
+        return Err(EndpointParseError(
+            "IPv6 endpoints must use bracketed host:port syntax",
+        ));
+    }
+
+    let dns_name = host.strip_suffix('.').unwrap_or(host);
+    if dns_name.is_empty() || dns_name.len() > 253 {
+        return Err(EndpointParseError("endpoint DNS host is invalid"));
+    }
+    for label in dns_name.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(EndpointParseError("endpoint DNS host is invalid"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -141,7 +209,7 @@ mod tests {
     use super::Endpoint;
 
     #[test]
-    fn parses_dns_and_ipv6_endpoints() {
+    fn parses_dns_ipv6_onion_and_punycode_endpoints() {
         let dns: Endpoint = "relay.example:50001".parse().expect("valid endpoint");
         assert_eq!(dns.host(), "relay.example");
         assert_eq!(dns.port(), 50_001);
@@ -149,13 +217,41 @@ mod tests {
         let ipv6: Endpoint = "[::1]:50001".parse().expect("valid IPv6 endpoint");
         assert_eq!(ipv6.host(), "::1");
         assert_eq!(ipv6.to_string(), "[::1]:50001");
+
+        assert!(
+            "examplehiddenservice.onion:50001"
+                .parse::<Endpoint>()
+                .is_ok()
+        );
+        assert!("xn--bcher-kva.example.:50001".parse::<Endpoint>().is_ok());
     }
 
     #[test]
     fn rejects_ambiguous_or_zero_port_endpoints() {
         assert!("relay.example".parse::<Endpoint>().is_err());
         assert!("relay.example:0".parse::<Endpoint>().is_err());
+        assert!("127.0.0.1:0".parse::<Endpoint>().is_err());
+        assert!("[::1]:0".parse::<Endpoint>().is_err());
         assert!(" relay.example:50001".parse::<Endpoint>().is_err());
+        assert!("::1:50001".parse::<Endpoint>().is_err());
+    }
+
+    #[test]
+    fn rejects_urls_userinfo_paths_unicode_and_malformed_dns() {
+        for endpoint in [
+            "https://relay.example:50001",
+            "user@relay.example:50001",
+            "relay.example/path:50001",
+            "[relay.example]:50001",
+            ".relay.example:50001",
+            "relay..example:50001",
+            "-relay.example:50001",
+            "relay-.example:50001",
+            "relay_example:50001",
+            "bücher.example:50001",
+        ] {
+            assert!(endpoint.parse::<Endpoint>().is_err(), "accepted {endpoint}");
+        }
     }
 
     #[test]
@@ -177,6 +273,7 @@ mod tests {
 
         assert!(Endpoint::new("localhost", 50_003).could_target_listener(loopback));
         assert!(Endpoint::new("127.0.0.1", 50_003).could_target_listener(loopback));
+        assert!(Endpoint::new("::1", 50_003).could_target_listener(loopback));
         assert!(Endpoint::new("127.0.0.1", 50_003).could_target_listener(wildcard));
         assert!(!Endpoint::new("relay.example", 50_003).could_target_listener(loopback));
         assert!(!Endpoint::new("127.0.0.1", 50_001).could_target_listener(loopback));

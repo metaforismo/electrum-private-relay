@@ -135,15 +135,29 @@ impl TryFrom<Cli> for Config {
     type Error = ConfigError;
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
+        if cli.listen.port() == 0 {
+            return Err(ConfigError("listener port must be non-zero".into()));
+        }
         if !cli.listen.ip().is_loopback() && !cli.allow_non_loopback_listen {
             return Err(ConfigError(
                 "refusing a non-loopback listener without --allow-non-loopback-listen".into(),
             ));
         }
+        cli.upstream
+            .validate()
+            .map_err(|error| ConfigError(format!("invalid query upstream: {error}")))?;
         if cli.upstream.could_target_listener(cli.listen) {
             return Err(ConfigError(
                 "query upstream must not target the client listener".into(),
             ));
+        }
+        if cli.socks5_proxy.port() == 0 {
+            return Err(ConfigError("SOCKS5 proxy port must be non-zero".into()));
+        }
+        if let Some(relay_endpoint) = &cli.relay_endpoint {
+            relay_endpoint
+                .validate()
+                .map_err(|error| ConfigError(format!("invalid private relay endpoint: {error}")))?;
         }
         if !(1..=MAX_CONFIGURABLE_CONNECTIONS).contains(&cli.max_connections) {
             return Err(ConfigError(format!(
@@ -231,6 +245,25 @@ mod tests {
         let mut input = cli();
         input.listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 50_003);
         assert!(Config::try_from(input).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_port_and_programmatically_invalid_endpoints() {
+        let mut zero_listener = cli();
+        zero_listener.listen.set_port(0);
+        assert!(Config::try_from(zero_listener).is_err());
+
+        let mut zero_upstream = cli();
+        zero_upstream.upstream = Endpoint::new("127.0.0.1", 0);
+        assert!(Config::try_from(zero_upstream).is_err());
+
+        let mut invalid_upstream = cli();
+        invalid_upstream.upstream = Endpoint::new("relay.example/path", 50_001);
+        assert!(Config::try_from(invalid_upstream).is_err());
+
+        let mut zero_socks = cli();
+        zero_socks.socks5_proxy.set_port(0);
+        assert!(Config::try_from(zero_socks).is_err());
     }
 
     #[test]

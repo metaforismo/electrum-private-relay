@@ -47,6 +47,14 @@ wallet -- Electrum TCP --> proxy -- read/query methods --> Electrum upstream
   public fallback is attempted.
 - Rejects obvious configuration loops into the client listener and obvious
   query/relay endpoint reuse before any socket is opened.
+- Rejects zero ports, URL/userinfo/path syntax, unbracketed IPv6 literals,
+  non-ASCII DNS names, and malformed DNS labels before network setup.
+
+Endpoint arguments accept only `host:port` syntax. IPv6 literals must use
+`[address]:port`; DNS names must be ASCII (use punycode for internationalized
+names), and a final DNS root dot is allowed. Onion names use the same DNS-style
+syntax. Ports must be in `1..=65535`. Do not pass schemes such as `tcp://` or
+`ssl://`, credentials, query strings, or paths.
 
 The endpoint guardrails compare literal IPs, loopback aliases, DNS case, and a
 trailing root dot. They intentionally do not resolve DNS and therefore do not
@@ -81,8 +89,8 @@ cargo clippy --locked --all-targets -- -D warnings
 ```
 
 The Rust suite includes black-box CLI checks proving that configuration-only
-validation exits without binding or connecting and that obvious loop/reuse
-configurations fail closed.
+validation exits without binding or connecting and that unsafe loops, endpoint
+reuse, zero ports, and ambiguous endpoint syntax fail closed.
 
 The pull-request integration gate also replays source-derived Electrum,
 Sparrow, and BlueWallet protocol profiles and broadcasts a real signed regtest
@@ -145,7 +153,8 @@ Implemented:
 - fail-closed relay behavior;
 - SOCKS5-to-Electrum relay adapter;
 - bounded resources and privacy-preserving operational output;
-- offline configuration validation and obvious endpoint-loop guardrails;
+- offline configuration validation, strict endpoint syntax, and obvious
+  endpoint-loop guardrails;
 - unit, black-box CLI, and in-memory integration tests;
 - source-derived wire profiles for Electrum, Sparrow, and BlueWallet;
 - a real Bitcoin Core regtest broadcast gate;

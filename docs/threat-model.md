@@ -12,8 +12,9 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 
 ## Trust boundaries
 
-- The local host and operator configuration are trusted, but common
-  self-referential endpoint mistakes are rejected before runtime.
+- The local host and operator configuration are trusted, but malformed endpoint
+  syntax and common self-referential endpoint mistakes are rejected before
+  runtime.
 - Electrum client frames, upstream frames, and relay responses are attacker-
   controlled inputs.
 - The query upstream can observe queries and lie by omission.
@@ -39,8 +40,10 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
    shape match the expected contract.
 8. Query-upstream responses are forwarded only for outstanding query IDs and
    cannot satisfy an intercepted broadcast ID.
-9. Obvious listener loops and obvious reuse of the query upstream as the private
-   relay are rejected before any runtime socket is opened.
+9. Listener, upstream, relay, and SOCKS ports are non-zero; Electrum endpoint
+   values use unambiguous `host:port` syntax with strict IP or DNS host grammar.
+10. Obvious listener loops and obvious reuse of the query upstream as the
+    private relay are rejected before any runtime socket is opened.
 
 ## Attacker goals considered
 
@@ -53,6 +56,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Cause a private route failure to downgrade into public propagation.
 - Recover sensitive wallet or transaction data from logs or crash output.
 - Reach an unintentionally public unauthenticated listener.
+- Smuggle a URL, credential, path, malformed DNS name, ambiguous IPv6 spelling,
+  or disabled port into an endpoint field.
 - Induce an obvious self-loop or query/relay endpoint collision through an
   operator configuration error.
 
@@ -62,6 +67,9 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 the client listener or connecting to the query upstream, relay, or SOCKS proxy.
 The same validation always runs during normal startup. It rejects:
 
+- zero listener, query-upstream, relay, or SOCKS-proxy ports;
+- endpoint values containing schemes, user information, paths, whitespace,
+  unbracketed IPv6 literals, raw non-ASCII DNS names, or malformed DNS labels;
 - zero or excessive connection and pending-request limits;
 - a query upstream that is an obvious literal-IP or `localhost` alias of the
   client listener;
@@ -70,7 +78,9 @@ The same validation always runs during normal startup. It rejects:
   and
 - the existing unsafe non-loopback and missing-relay conditions.
 
-Endpoint comparisons cover exact IPs, loopback aliases, DNS case, and a trailing
+Endpoint parsing accepts literal IPv4, bracketed IPv6 in CLI `host:port` input,
+ASCII DNS names, punycode names, onion names, and an optional final DNS root dot.
+Endpoint comparisons cover exact IPs, loopback aliases, DNS case, and that final
 root dot. They intentionally perform no DNS lookup. DNS rebinding, CNAMEs,
 split-horizon names, routing changes, proxies behind the same hostname, and
 malicious local name resolution remain outside this guardrail and require
@@ -91,10 +101,10 @@ operator review.
 
 ## Validation strategy
 
-- Unit tests exercise strict parsing, bounded configuration, endpoint alias
-  checks, and listener-loop/query-relay rejection.
+- Unit tests exercise strict parsing, zero-port rejection, bounded
+  configuration, endpoint alias checks, and listener-loop/query-relay rejection.
 - Black-box CLI tests prove `--check-config` exits successfully without network
-  setup and fails closed on representative unsafe configurations.
+  setup and fails closed on representative unsafe or ambiguous endpoint values.
 - An in-memory integration test proves that normal queries reach the upstream
   while a broadcast is handled by the relay and is not observed upstream.
 - Source-derived Electrum, Sparrow, and BlueWallet wire profiles exercise
