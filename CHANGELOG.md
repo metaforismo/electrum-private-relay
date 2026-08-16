@@ -16,6 +16,8 @@ stable release.
 - Bounded request identifiers and per-connection outstanding-request window
   with fail-closed overflow.
 - Outstanding-request correlation to block query-upstream response spoofing.
+- Offline `--check-config` validation and obvious listener-loop/query-relay
+  separation guardrails.
 - Source-derived Electrum, Sparrow, and BlueWallet wire-profile tests.
 - Docker-backed Bitcoin Core 30.2 regtest broadcast gate.
 - Scheduled and manually runnable real Tor v3 onion smoke test.
