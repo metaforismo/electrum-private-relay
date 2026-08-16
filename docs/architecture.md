@@ -72,28 +72,31 @@ The relay interface receives only a validated, hex-encoded signed transaction.
 Exactly one adapter is active for a process. The safe default adapter rejects
 all submissions.
 
-The selected adapter is wrapped in one process-wide, semaphore-backed admission
-limit. Eight simultaneous submissions are allowed by default. Permit acquisition
-is non-blocking: a saturated request fails immediately, the adapter is not
-called, and the transaction is never sent to the query upstream or another
-route. There is intentionally no overload queue.
+The selected adapter is wrapped in one process-wide admission layer backed by
+two non-blocking semaphores: one counts simultaneous submissions and the other
+accounts for the actual bytes of raw-transaction hex held inside relay calls.
+Eight simultaneous submissions are allowed by default. When either budget is
+exhausted, the adapter is not called and the transaction is never sent to the
+query upstream or another route. There is intentionally no overload queue.
 
-The configured concurrency multiplied by the maximum frame size may not exceed
-128 MiB. This bounds aggregate input payload volume admitted to relay calls; it
-is not an exact RSS limit because parsers, serializers, transports, tasks, and
-dependencies add overhead and may temporarily copy data.
+Configuration also rejects a concurrency × maximum-frame-size product above
+128 MiB. The runtime byte semaphore independently enforces the same 128 MiB
+ceiling over the actual raw-transaction strings, including when a library user
+constructs configuration without the CLI parser. These are input-payload bounds,
+not exact RSS limits: parsers, serializers, transports, tasks, and dependencies
+add overhead and may temporarily copy data.
 
 The initial `socks-electrum` adapter opens a new SOCKS5 connection, submits the
 standard Electrum broadcast method, validates the response ID and transaction ID,
-and then drops the connection. The admission permit remains held until that call
-returns or reaches its configured timeout.
+and then drops the connection. Both admission permits remain held until that
+call returns or reaches its configured timeout.
 
 ## Security-relevant design decisions
 
 - No automatic fallback from a private relay to the query upstream.
 - No fan-out to multiple relay providers.
 - No queue for relay overload.
-- No unbounded simultaneous relay submissions or aggregate relay input budget.
+- No unbounded simultaneous relay submissions or aggregate relay input payload.
 - No request bodies or identifiers in application logs.
 - No unsolicited query-upstream responses or response-ID collisions.
 - No unbounded frame reads.
