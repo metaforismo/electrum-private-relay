@@ -84,6 +84,7 @@ impl Endpoint {
             return false;
         };
         endpoint_ip == listener.ip()
+            || (endpoint_ip.is_loopback() && listener.ip().is_loopback())
             || (listener.ip().is_unspecified()
                 && (endpoint_ip.is_loopback() || endpoint_ip.is_unspecified()))
             || (endpoint_ip.is_unspecified() && listener.ip().is_loopback())
@@ -259,6 +260,7 @@ mod tests {
 
         assert!(Endpoint::new("localhost", 50_003).could_target_listener(loopback));
         assert!(Endpoint::new("127.0.0.1", 50_003).could_target_listener(loopback));
+        assert!(Endpoint::new("::1", 50_003).could_target_listener(loopback));
         assert!(Endpoint::new("127.0.0.1", 50_003).could_target_listener(wildcard));
         assert!(!Endpoint::new("relay.example", 50_003).could_target_listener(loopback));
         assert!(!Endpoint::new("127.0.0.1", 50_001).could_target_listener(loopback));
