@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fmt, net::SocketAddr, str::FromStr};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Endpoint {
@@ -25,6 +29,56 @@ impl Endpoint {
     #[must_use]
     pub const fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Returns whether two endpoint spellings identify the same obvious target.
+    ///
+    /// This handles exact IPs, loopback aliases, DNS case, and a trailing DNS
+    /// root dot. It deliberately does not perform DNS resolution.
+    #[must_use]
+    pub fn same_target(&self, other: &Self) -> bool {
+        if self.port != other.port {
+            return false;
+        }
+
+        let left = self.normalized_host();
+        let right = other.normalized_host();
+        match (left.parse::<IpAddr>(), right.parse::<IpAddr>()) {
+            (Ok(left_ip), Ok(right_ip)) => {
+                left_ip == right_ip || (left_ip.is_loopback() && right_ip.is_loopback())
+            }
+            (Ok(ip), Err(_)) => right.eq_ignore_ascii_case("localhost") && ip.is_loopback(),
+            (Err(_), Ok(ip)) => left.eq_ignore_ascii_case("localhost") && ip.is_loopback(),
+            (Err(_), Err(_)) => left.eq_ignore_ascii_case(right),
+        }
+    }
+
+    /// Returns whether this endpoint obviously targets the client listener.
+    ///
+    /// Only literal IPs and the `localhost` alias are evaluated. The check is a
+    /// fail-closed guardrail against common loops, not DNS authentication.
+    #[must_use]
+    pub fn could_target_listener(&self, listener: SocketAddr) -> bool {
+        if self.port != listener.port() {
+            return false;
+        }
+
+        let host = self.normalized_host();
+        if host.eq_ignore_ascii_case("localhost") {
+            return listener.ip().is_loopback() || listener.ip().is_unspecified();
+        }
+
+        let Ok(endpoint_ip) = host.parse::<IpAddr>() else {
+            return false;
+        };
+        endpoint_ip == listener.ip()
+            || (listener.ip().is_unspecified()
+                && (endpoint_ip.is_loopback() || endpoint_ip.is_unspecified()))
+            || (endpoint_ip.is_unspecified() && listener.ip().is_loopback())
+    }
+
+    fn normalized_host(&self) -> &str {
+        self.host.trim_end_matches('.')
     }
 }
 
@@ -82,6 +136,8 @@ impl FromStr for Endpoint {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
     use super::Endpoint;
 
     #[test]
@@ -100,5 +156,29 @@ mod tests {
         assert!("relay.example".parse::<Endpoint>().is_err());
         assert!("relay.example:0".parse::<Endpoint>().is_err());
         assert!(" relay.example:50001".parse::<Endpoint>().is_err());
+    }
+
+    #[test]
+    fn recognizes_obvious_target_aliases_without_dns() {
+        let dns = Endpoint::new("Relay.Example.", 50_001);
+        assert!(dns.same_target(&Endpoint::new("relay.example", 50_001)));
+        assert!(
+            Endpoint::new("localhost", 50_001).same_target(&Endpoint::new("127.0.0.1", 50_001))
+        );
+        assert!(Endpoint::new("127.0.0.2", 50_001).same_target(&Endpoint::new("::1", 50_001)));
+        assert!(!dns.same_target(&Endpoint::new("relay.example", 50_002)));
+        assert!(!dns.same_target(&Endpoint::new("other.example", 50_001)));
+    }
+
+    #[test]
+    fn detects_obvious_listener_loops() {
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 50_003);
+        let wildcard = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 50_003);
+
+        assert!(Endpoint::new("localhost", 50_003).could_target_listener(loopback));
+        assert!(Endpoint::new("127.0.0.1", 50_003).could_target_listener(loopback));
+        assert!(Endpoint::new("127.0.0.1", 50_003).could_target_listener(wildcard));
+        assert!(!Endpoint::new("relay.example", 50_003).could_target_listener(loopback));
+        assert!(!Endpoint::new("127.0.0.1", 50_001).could_target_listener(loopback));
     }
 }

@@ -12,7 +12,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 
 ## Trust boundaries
 
-- The local host and operator configuration are trusted.
+- The local host and operator configuration are trusted, but common
+  self-referential endpoint mistakes are rejected before runtime.
 - Electrum client frames, upstream frames, and relay responses are attacker-
   controlled inputs.
 - The query upstream can observe queries and lie by omission.
@@ -20,6 +21,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
   a false result, or correlate it with an account or client code.
 - Tor and the local SOCKS5 daemon are external dependencies, not controls proven
   by this repository.
+- DNS resolution and routing are external to configuration validation; textual
+  endpoint checks do not authenticate their eventual destination.
 
 ## Security invariants
 
@@ -36,6 +39,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
    shape match the expected contract.
 8. Query-upstream responses are forwarded only for outstanding query IDs and
    cannot satisfy an intercepted broadcast ID.
+9. Obvious listener loops and obvious reuse of the query upstream as the private
+   relay are rejected before any runtime socket is opened.
 
 ## Attacker goals considered
 
@@ -48,6 +53,28 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Cause a private route failure to downgrade into public propagation.
 - Recover sensitive wallet or transaction data from logs or crash output.
 - Reach an unintentionally public unauthenticated listener.
+- Induce an obvious self-loop or query/relay endpoint collision through an
+  operator configuration error.
+
+## Configuration guardrail boundary
+
+`--check-config` runs parsing and semantic validation, then exits before binding
+the client listener or connecting to the query upstream, relay, or SOCKS proxy.
+The same validation always runs during normal startup. It rejects:
+
+- zero or excessive connection and pending-request limits;
+- a query upstream that is an obvious literal-IP or `localhost` alias of the
+  client listener;
+- a SOCKS Electrum relay that is an obvious alias of the query upstream;
+- a relay endpoint or SOCKS proxy that obviously targets the client listener;
+  and
+- the existing unsafe non-loopback and missing-relay conditions.
+
+Endpoint comparisons cover exact IPs, loopback aliases, DNS case, and a trailing
+root dot. They intentionally perform no DNS lookup. DNS rebinding, CNAMEs,
+split-horizon names, routing changes, proxies behind the same hostname, and
+malicious local name resolution remain outside this guardrail and require
+operator review.
 
 ## Out of scope for the current milestone
 
@@ -59,10 +86,15 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Multi-user isolation, billing, hosted-service operation, and denial-of-service
   resistance for a public clearnet deployment.
 - Validating Bitcoin consensus or mempool policy locally.
+- Authenticating DNS or proving that two differently named endpoints cannot
+  resolve to the same destination.
 
 ## Validation strategy
 
-- Unit tests exercise strict parsing and configuration validation.
+- Unit tests exercise strict parsing, bounded configuration, endpoint alias
+  checks, and listener-loop/query-relay rejection.
+- Black-box CLI tests prove `--check-config` exits successfully without network
+  setup and fails closed on representative unsafe configurations.
 - An in-memory integration test proves that normal queries reach the upstream
   while a broadcast is handled by the relay and is not observed upstream.
 - Source-derived Electrum, Sparrow, and BlueWallet wire profiles exercise
