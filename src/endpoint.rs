@@ -204,12 +204,12 @@ mod tests {
         assert_eq!(ipv6.host(), "::1");
         assert_eq!(ipv6.to_string(), "[::1]:50001");
 
-        assert!("examplehiddenservice.onion:50001"
-            .parse::<Endpoint>()
-            .is_ok());
-        assert!("xn--bcher-kva.example.:50001"
-            .parse::<Endpoint>()
-            .is_ok());
+        assert!(
+            "examplehiddenservice.onion:50001"
+                .parse::<Endpoint>()
+                .is_ok()
+        );
+        assert!("xn--bcher-kva.example.:50001".parse::<Endpoint>().is_ok());
     }
 
     #[test]
