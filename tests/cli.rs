@@ -69,5 +69,7 @@ fn check_config_rejects_url_instead_of_host_port() {
         .expect("binary should run");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid value"));
+    assert!(stderr.contains(
+        "endpoint must use host:port without scheme, credentials, or path"
+    ));
 }
