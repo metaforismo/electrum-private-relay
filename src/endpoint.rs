@@ -162,10 +162,10 @@ mod tests {
     fn recognizes_obvious_target_aliases_without_dns() {
         let dns = Endpoint::new("Relay.Example.", 50_001);
         assert!(dns.same_target(&Endpoint::new("relay.example", 50_001)));
-        assert!(Endpoint::new("localhost", 50_001)
-            .same_target(&Endpoint::new("127.0.0.1", 50_001)));
-        assert!(Endpoint::new("127.0.0.2", 50_001)
-            .same_target(&Endpoint::new("::1", 50_001)));
+        assert!(
+            Endpoint::new("localhost", 50_001).same_target(&Endpoint::new("127.0.0.1", 50_001))
+        );
+        assert!(Endpoint::new("127.0.0.2", 50_001).same_target(&Endpoint::new("::1", 50_001)));
         assert!(!dns.same_target(&Endpoint::new("relay.example", 50_002)));
         assert!(!dns.same_target(&Endpoint::new("other.example", 50_001)));
     }
