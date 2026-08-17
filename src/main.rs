@@ -8,9 +8,7 @@ use clap::Parser;
 use electrum_private_relay::{
     config::{Cli, Config, RelayMode},
     proxy::serve_until,
-    relay::{
-        DrainingRelay, LimitedRelay, RejectRelay, SharedRelay, SocksElectrumRelay,
-    },
+    relay::{DrainingRelay, LimitedRelay, RejectRelay, SharedRelay, SocksElectrumRelay},
 };
 use tokio::sync::oneshot;
 
