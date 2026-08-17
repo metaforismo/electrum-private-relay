@@ -41,8 +41,9 @@ wallet -- Electrum TCP --> proxy -- read/query methods --> Electrum upstream
   bounded per-connection window of response-bearing requests.
 - Limits simultaneous relay submissions across the entire process and rejects
   overload immediately without a queue or a call to the configured relay.
-- On graceful shutdown, atomically rejects new relay submissions and waits a
-  bounded interval for already admitted calls to return before runtime teardown.
+- On graceful shutdown, atomically rejects new relay submissions, stops the
+  listener, signals every accepted connection, and supervises all connection
+  tasks through one bounded drain deadline.
 - Correlates upstream response IDs and drops unsolicited responses or responses
   that collide with an intercepted broadcast.
 - Rejects malformed or batched client requests rather than risk bypassing the
@@ -95,9 +96,11 @@ cargo clippy --locked --all-targets -- -D warnings
 The Rust suite includes black-box CLI checks proving that configuration-only
 validation exits without binding or connecting and that unsafe loops, endpoint
 reuse, zero ports, ambiguous endpoint syntax, and invalid resource limits fail
-closed. Controlled asynchronous tests cover relay saturation and the shutdown
-lifecycle, including a real TCP path where a broadcast already in progress
-finishes and its txid still reaches the wallet after the listener stops.
+closed. Controlled asynchronous tests cover relay saturation and all three
+shutdown outcomes: an admitted broadcast finishes and reaches the wallet before
+the supervised server returns, a deliberately stuck relay is cancelled after
+the bounded deadline, and an idle connection closes promptly without consuming
+the full deadline.
 
 The pull-request integration gate also replays source-derived Electrum,
 Sparrow, and BlueWallet protocol profiles and broadcasts a real signed regtest
@@ -146,15 +149,22 @@ the selected adapter is not called, the query upstream sees no transaction, and
 no fallback is attempted. The wallet connection remains available for later
 requests.
 
-`Ctrl-C` begins a bounded two-phase shutdown. New private relay submissions are
-rejected first, then the listener stops accepting connections. A relay call
-already admitted may run for at most the configured relay timeout, followed by
-one second of response-flush headroom. If that interval expires, remaining work
-is cancelled without retry or fallback. This improves orderly operator shutdown,
-but it cannot guarantee the wallet receives a result after `SIGKILL`, power
-loss, a process crash, or a provider that accepted the transaction and never
-returned a valid response. Treat those cases as an unknown outcome rather than
-blindly rebroadcasting over a public path.
+`Ctrl-C` begins a bounded supervised shutdown. New private relay submissions are
+rejected before the listener is stopped. Every accepted connection task is
+tracked, and its client reader receives a shutdown signal. Idle connections and
+connections still opening their query-upstream socket close immediately. A
+private relay call already admitted may run until its configured relay timeout;
+its connection then has up to one second of response-flush headroom. The process
+returns normally only after all supervised connection tasks finish. If the
+combined `relay timeout + 1 second` deadline expires, remaining tasks are
+cancelled without retry, alternate adapter, query-upstream fallback, or fan-out,
+and the process emits one non-sensitive warning.
+
+This improves orderly operator shutdown, but it cannot guarantee the wallet
+receives a result after `SIGKILL`, power loss, a process crash, blocked wallet
+output, or a provider that accepted the transaction and never returned a valid
+response. Treat those cases as an unknown outcome rather than blindly
+rebroadcasting over a public path.
 
 To use a separate Electrum relay over Tor SOCKS5:
 
@@ -186,7 +196,7 @@ Implemented:
 - SOCKS5-to-Electrum relay adapter;
 - bounded connections, frames, request tables, and process-wide relay
   submissions with an aggregate payload budget;
-- bounded graceful shutdown for already admitted relay calls;
+- bounded, supervised shutdown of every accepted connection task;
 - privacy-preserving operational output;
 - offline configuration validation, strict endpoint syntax, and obvious
   endpoint-loop guardrails;

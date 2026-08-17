@@ -50,8 +50,9 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
     values use unambiguous `host:port` syntax with strict IP or DNS host grammar.
 12. Obvious listener loops and obvious reuse of the query upstream as the
     private relay are rejected before any runtime socket is opened.
-13. Graceful shutdown rejects new relay admission, bounds the drain wait, and
-    never turns cancellation or timeout into retry, fallback, or fan-out.
+13. Graceful shutdown rejects new relay admission, supervises every accepted
+    connection task, bounds the complete drain wait, and never turns
+    cancellation or timeout into retry, fallback, or fan-out.
 
 ## Attacker goals considered
 
@@ -66,8 +67,9 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Inject an unsolicited query-upstream response that impersonates broadcast
   success.
 - Cause a private route failure to downgrade into public propagation.
-- Exploit process shutdown to admit another relay call, duplicate an existing
-  submission, or silently redirect it after cancellation.
+- Exploit process shutdown to admit another relay call, detach untracked
+  connection work, duplicate an existing submission, or silently redirect it
+  after cancellation.
 - Recover sensitive wallet or transaction data from logs or crash output.
 - Reach an unintentionally public unauthenticated listener.
 - Smuggle a URL, credential, path, malformed DNS name, ambiguous IPv6 spelling,
@@ -126,17 +128,27 @@ temporary fail-closed unavailability rather than unbounded growth.
 
 ## Graceful shutdown boundary
 
-The `Ctrl-C` path changes relay admission under one mutex before stopping the
-listener. A call that incremented the active count first remains admitted; a
+The `Ctrl-C` path changes relay admission under one mutex before notifying the
+server loop. A call that incremented the active count first remains admitted; a
 call that reaches the gate after shutdown starts receives a generic relay error.
-This ordering prevents a check-then-increment race from admitting untracked work.
+This ordering prevents a check-then-increment race from admitting untracked relay
+work.
 
-After the server loop drops the listener, detached connection tasks remain alive
-inside the Tokio runtime. The process waits for the tracked active count to reach
-zero for at most the configured relay timeout. When it reaches zero, one second
-of additional headroom is reserved for the caller to construct and flush the
-wallet response. When it does not, runtime teardown cancels the remaining task.
-Neither outcome invokes another adapter or the query upstream.
+Accepted wallet connections are stored in one supervised Tokio task set. After
+the server drops the listener, it broadcasts a shutdown state to every
+connection task. A connection still opening its query-upstream socket exits;
+an idle client reader exits; and a client already awaiting an admitted relay
+call may finish that call, enqueue the correlated result, and then exits before
+reading another request. The per-connection writer retains its one-second
+bounded flush window.
+
+The outer server waits for all connection tasks for at most the configured relay
+timeout plus one second. A clean outcome is reported only when the full task set
+has joined. If the deadline expires, or a supervised task terminates
+unexpectedly, the remaining tasks are aborted and awaited. Task cancellation
+drops any relay admission guards, but it never calls an alternate adapter,
+retries the transaction, writes it to the query upstream, or fans out. Only a
+non-sensitive process warning distinguishes a forced drain from a clean one.
 
 This is a best-effort reduction of local cancellation ambiguity, not an atomic
 network protocol. A provider may accept a transaction immediately before a
@@ -169,11 +181,13 @@ they must not assume failure and blindly resubmit through a public route.
 - Controlled asynchronous relay tests separately saturate the request-slot and
   actual-payload-byte budgets, prove the wrapped adapter is not called, release
   the held permits, and prove the admitted request completes.
-- Lifecycle tests prove shutdown rejects a new relay call, waits for a call that
-  was already admitted, and expires its wait for a deliberately stuck relay.
-- A TCP integration test stops the listener while a controlled broadcast is
-  active, then proves the admitted call completes and its correlated txid still
-  reaches the wallet without appearing at the query upstream.
+- Relay-lifecycle tests prove shutdown rejects a new relay call, waits for a call
+  that was already admitted, and expires its wait for a deliberately stuck
+  relay.
+- TCP shutdown tests prove three connection-level outcomes: an admitted call
+  completes and its correlated txid reaches the wallet without appearing at the
+  query upstream; a stuck call is force-cancelled after the bounded connection
+  deadline; and an idle connection closes promptly.
 - Black-box CLI tests prove `--check-config` exits successfully without network
   setup and fails closed on representative unsafe, ambiguous, or zero-valued
   endpoint and resource configurations.

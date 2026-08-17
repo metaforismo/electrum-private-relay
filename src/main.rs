@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::{process::ExitCode, sync::Arc, time::Duration};
+use std::{process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use electrum_private_relay::{
@@ -11,8 +11,6 @@ use electrum_private_relay::{
     relay::{DrainingRelay, LimitedRelay, RejectRelay, SharedRelay, SocksElectrumRelay},
 };
 use tokio::sync::oneshot;
-
-const SHUTDOWN_RESPONSE_FLUSH_GRACE: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -48,7 +46,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let relay: SharedRelay = Arc::new(LimitedRelay::new(relay, config.max_concurrent_broadcasts));
     let (relay, drain) = DrainingRelay::new(relay);
     let relay: SharedRelay = Arc::new(relay);
-    let maximum_drain = config.relay_timeout;
 
     let (shutdown_sender, shutdown_receiver) = oneshot::channel();
     let signal_drain = drain.clone();
@@ -67,17 +64,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
 
-    if let Err(error) = server_result {
-        signal_task.abort();
-        return Err(Box::new(error));
-    }
+    let report = match server_result {
+        Ok(report) => report,
+        Err(error) => {
+            signal_task.abort();
+            return Err(Box::new(error));
+        }
+    };
     let _ = signal_task.await;
 
-    if drain.wait_for_idle(maximum_drain).await {
-        tokio::time::sleep(SHUTDOWN_RESPONSE_FLUSH_GRACE).await;
-    } else {
+    if !report.all_connections_drained() {
         eprintln!(
-            "shutdown relay drain expired; remaining private relay work will be cancelled without fallback"
+            "shutdown connection drain expired; remaining connection work was cancelled without retry or fallback"
         );
     }
     Ok(())

@@ -93,27 +93,46 @@ call returns or reaches its configured timeout.
 
 ### Process shutdown
 
-The selected relay is also wrapped in a race-free lifecycle gate. On `Ctrl-C`,
-the process atomically stops admitting new private relay calls before it signals
-the server loop to stop. The listener is then dropped, so no new wallet
-connections are accepted. A broadcast that entered the lifecycle gate before
-that transition remains admitted; a later broadcast receives the ordinary
-generic private-relay failure and is never redirected elsewhere.
+The selected relay is wrapped in a race-free lifecycle gate. On `Ctrl-C`, the
+process atomically stops admitting new private relay calls before it signals the
+server loop. The listener is then dropped, so no new wallet connections are
+accepted. A broadcast that entered the lifecycle gate before that transition
+remains admitted; a later broadcast receives the ordinary generic private-relay
+failure and is never redirected elsewhere.
 
-Connection tasks are independent Tokio tasks. After the listener stops, the
-runtime remains alive while the lifecycle handle waits for admitted relay calls
-to return, bounded by the configured relay timeout. If they all return, the
-process keeps one additional second of response-flush headroom so the connection
-task can serialize the relay result and write it to the wallet. Idle query
-connections and other remaining tasks end when that bounded shutdown phase
-finishes.
+Every accepted wallet connection is owned by one Tokio `JoinSet` rather than
+being detached from the server lifetime. A process-wide `watch` channel is
+subscribed by each connection task. Once shutdown begins:
 
-If the relay drain reaches its timeout, the process reports a non-sensitive
-shutdown error and exits. Remaining work is cancelled by runtime teardown; no
-retry, query-upstream fallback, or multi-relay fan-out is attempted. This reduces
-avoidable local cancellation ambiguity, but it cannot guarantee delivery after
-`SIGKILL`, power loss, operating-system failure, or a relay that accepted a
-transaction but never returned a usable response.
+1. connection attempts still opening their query-upstream socket are cancelled;
+2. idle wallet readers and ordinary query connections observe the signal and
+   close;
+3. a client task already awaiting one admitted private relay call is allowed to
+   receive that result, enqueue the correlated response, and then observes the
+   shutdown signal before reading another wallet request; and
+4. the connection writer is given its existing one-second bounded flush window.
+
+Each connection owns its writer, upstream-reader, and client-reader subtasks
+through abort-on-drop handles. Normal paths explicitly abort and await the
+siblings that are no longer needed. If the outer connection task is itself
+cancelled at the shutdown deadline, dropping those handles requests cancellation
+of all three subtasks instead of detaching them. This also releases any
+`DrainingRelay` active-call guard held by a stuck client subtask.
+
+The server waits for the entire supervised connection set, not merely for the
+relay active-count to reach zero. The outer deadline is the configured relay
+timeout plus one second of response-flush headroom. If every task completes, the
+server returns a successful `ShutdownReport`. If the deadline expires or a
+connection task fails, the remaining set is aborted and awaited before the
+runtime continues. Cancellation never invokes a different adapter, retries a
+submission, writes the transaction to the query upstream, or fans out.
+
+This reduces two avoidable ambiguities in the former lifecycle: connection tasks
+and their subtasks are no longer detached when the listener stops, and the
+process no longer relies on an unconditional one-second sleep after the relay
+count becomes idle. It is still not an atomic acknowledgement protocol.
+`SIGKILL`, power loss, kernel or process failure, blocked wallet output, and
+provider-side acceptance without a usable response remain unknown outcomes.
 
 ## Security-relevant design decisions
 
@@ -122,7 +141,9 @@ transaction but never returned a usable response.
 - No queue for relay overload.
 - No unbounded simultaneous relay submissions or aggregate relay input payload.
 - No new relay admission after graceful shutdown begins.
-- No unbounded shutdown wait for a stalled relay.
+- No detached accepted-connection or per-connection I/O tasks during graceful
+  shutdown.
+- No unbounded shutdown wait for a stalled relay or connection writer.
 - No request bodies or identifiers in application logs.
 - No unsolicited query-upstream responses or response-ID collisions.
 - No unbounded frame reads.

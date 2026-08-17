@@ -17,8 +17,9 @@ stable release.
   with fail-closed overflow.
 - Process-wide fail-closed broadcast concurrency and aggregate input-payload
   limits without overload queueing or relay fallback.
-- Bounded shutdown draining that rejects new relay submissions, lets previously
-  admitted calls return, and preserves their wallet response flush window.
+- Supervised, bounded shutdown for every accepted connection task: new relay
+  admission stops first, active calls may flush a correlated wallet response,
+  idle connections close promptly, and deadline expiry aborts without fallback.
 - Outstanding-request correlation to block query-upstream response spoofing.
 - Offline `--check-config` validation and obvious listener-loop/query-relay
   separation guardrails.

@@ -10,7 +10,8 @@ use tokio::{
         BufReader,
     },
     net::{TcpListener, TcpStream},
-    sync::{Mutex, Semaphore, mpsc},
+    sync::{Mutex, Semaphore, mpsc, watch},
+    task::{JoinHandle, JoinSet},
     time::timeout,
 };
 
@@ -23,13 +24,63 @@ use crate::{
     relay::{RelayErrorKind, SharedRelay},
 };
 
+const CONNECTION_RESPONSE_FLUSH_GRACE: Duration = Duration::from_secs(1);
+
 #[derive(Debug)]
 pub struct ProxyError(String);
+
+/// Outcome of the bounded connection-shutdown phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShutdownReport {
+    all_connections_drained: bool,
+}
+
+impl ShutdownReport {
+    /// Return whether every accepted connection task completed before the
+    /// bounded shutdown deadline.
+    #[must_use]
+    pub const fn all_connections_drained(&self) -> bool {
+        self.all_connections_drained
+    }
+}
 
 enum FinishedTask {
     Writer,
     Upstream,
     Client,
+}
+
+struct AbortTaskOnDrop<T> {
+    handle: JoinHandle<T>,
+}
+
+impl<T> AbortTaskOnDrop<T> {
+    #[must_use]
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self { handle }
+    }
+
+    fn abort(&self) {
+        self.handle.abort();
+    }
+
+    #[must_use]
+    fn handle_mut(&mut self) -> &mut JoinHandle<T> {
+        &mut self.handle
+    }
+
+    async fn finish_or_abort(&mut self, maximum_wait: Duration) {
+        if timeout(maximum_wait, self.handle_mut()).await.is_err() {
+            self.abort();
+            let _ = self.handle_mut().await;
+        }
+    }
+}
+
+impl<T> Drop for AbortTaskOnDrop<T> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +94,12 @@ enum Reservation {
     Reserved,
     Duplicate,
     LimitExceeded,
+}
+
+#[derive(Clone, Copy)]
+struct ConnectionLimits {
+    max_frame_bytes: usize,
+    max_pending_requests: usize,
 }
 
 type PendingRequests = Arc<Mutex<HashMap<String, PendingRequest>>>;
@@ -69,63 +126,110 @@ impl From<io::Error> for ProxyError {
     }
 }
 
-/// Runs the proxy until the supplied shutdown future resolves.
+/// Runs the proxy until the supplied shutdown future resolves, then supervises
+/// every accepted connection through one bounded shutdown phase.
+///
+/// New connections stop immediately. Existing connection readers receive a
+/// shutdown signal. A private relay call already admitted may finish and flush
+/// its correlated wallet response before the deadline; idle connections close.
+/// Remaining tasks are cancelled when the configured relay timeout plus one
+/// second of response-flush headroom expires.
 ///
 /// # Errors
 ///
-/// Returns an error when the listener cannot bind or accept a connection.
+/// Returns an error when the listener cannot bind or accept a connection, or
+/// when a supervised connection task terminates unexpectedly before shutdown.
 pub async fn serve_until<F>(
     config: Config,
     relay: SharedRelay,
     shutdown: F,
-) -> Result<(), ProxyError>
+) -> Result<ShutdownReport, ProxyError>
 where
     F: Future<Output = ()>,
 {
     let listener = TcpListener::bind(config.listen).await?;
     let connection_slots = Arc::new(Semaphore::new(config.max_connections));
+    let (shutdown_sender, _) = watch::channel(false);
+    let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
 
     loop {
-        let accepted = tokio::select! {
-            result = listener.accept() => Some(result),
-            () = &mut shutdown => None,
-        };
-        let Some(accepted) = accepted else {
-            return Ok(());
-        };
-        let (client, _) = accepted?;
+        tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            joined = connections.join_next(), if !connections.is_empty() => {
+                if matches!(joined, Some(Err(_))) {
+                    connections.shutdown().await;
+                    return Err(ProxyError("connection task failed".to_owned()));
+                }
+            }
+            accepted = listener.accept() => {
+                let (client, _) = accepted?;
+                let Ok(permit) = Arc::clone(&connection_slots).try_acquire_owned() else {
+                    drop(client);
+                    continue;
+                };
 
-        let Ok(permit) = Arc::clone(&connection_slots).try_acquire_owned() else {
-            drop(client);
-            continue;
-        };
+                let task_config = config.clone();
+                let task_relay = Arc::clone(&relay);
+                let mut task_shutdown = shutdown_sender.subscribe();
+                connections.spawn(async move {
+                    let _permit = permit;
+                    let upstream = tokio::select! {
+                        biased;
+                        () = wait_for_shutdown(&mut task_shutdown) => return,
+                        result = timeout(
+                            task_config.connect_timeout,
+                            TcpStream::connect((
+                                task_config.upstream.host(),
+                                task_config.upstream.port(),
+                            )),
+                        ) => result,
+                    };
+                    let Ok(Ok(upstream)) = upstream else {
+                        return;
+                    };
 
-        let task_config = config.clone();
-        let task_relay = Arc::clone(&relay);
-        tokio::spawn(async move {
-            let _permit = permit;
-            let upstream = timeout(
-                task_config.connect_timeout,
-                TcpStream::connect((task_config.upstream.host(), task_config.upstream.port())),
-            )
-            .await;
-            let Ok(Ok(upstream)) = upstream else {
-                return;
-            };
-
-            let _ = proxy_streams(
-                client,
-                upstream,
-                task_relay,
-                task_config.max_frame_bytes,
-                task_config.max_pending_requests.get(),
-            )
-            .await;
-        });
+                    let _ = proxy_streams_until(
+                        client,
+                        upstream,
+                        task_relay,
+                        task_config.max_frame_bytes,
+                        task_config.max_pending_requests.get(),
+                        task_shutdown,
+                    )
+                    .await;
+                });
+            }
+        }
     }
+
+    drop(listener);
+    shutdown_sender.send_replace(true);
+    let maximum_wait = config
+        .relay_timeout
+        .saturating_add(CONNECTION_RESPONSE_FLUSH_GRACE);
+    let all_connections_drained = timeout(maximum_wait, async {
+        while let Some(result) = connections.join_next().await {
+            if result.is_err() {
+                return false;
+            }
+        }
+        true
+    })
+    .await
+    .unwrap_or(false);
+
+    if !all_connections_drained {
+        connections.shutdown().await;
+    }
+
+    Ok(ShutdownReport {
+        all_connections_drained,
+    })
 }
 
+#[cfg(test)]
 async fn proxy_streams<C, U>(
     client: C,
     upstream: U,
@@ -137,54 +241,97 @@ where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let (_shutdown_sender, shutdown_receiver) = watch::channel(false);
+    proxy_streams_until(
+        client,
+        upstream,
+        relay,
+        max_frame_bytes,
+        max_pending_requests,
+        shutdown_receiver,
+    )
+    .await
+}
+
+async fn proxy_streams_until<C, U>(
+    client: C,
+    upstream: U,
+    relay: SharedRelay,
+    max_frame_bytes: usize,
+    max_pending_requests: usize,
+    shutdown: watch::Receiver<bool>,
+) -> io::Result<()>
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (client_reader, client_writer) = tokio::io::split(client);
     let (upstream_reader, upstream_writer) = tokio::io::split(upstream);
     let (client_output, output) = mpsc::channel::<Vec<u8>>(32);
     let pending_requests = Arc::new(Mutex::new(HashMap::new()));
 
-    let mut writer_task = tokio::spawn(write_client_output(client_writer, output));
-    let mut upstream_task = tokio::spawn(forward_upstream_frames(
+    let mut writer_task =
+        AbortTaskOnDrop::new(tokio::spawn(write_client_output(client_writer, output)));
+    let mut upstream_task = AbortTaskOnDrop::new(tokio::spawn(forward_upstream_frames(
         upstream_reader,
         client_output.clone(),
         Arc::clone(&pending_requests),
         max_frame_bytes,
-    ));
-    let mut client_task = tokio::spawn(handle_client_frames(
+    )));
+    let mut client_task = AbortTaskOnDrop::new(tokio::spawn(handle_client_frames(
         client_reader,
         upstream_writer,
         client_output.clone(),
         relay,
         pending_requests,
-        max_frame_bytes,
-        max_pending_requests,
-    ));
+        ConnectionLimits {
+            max_frame_bytes,
+            max_pending_requests,
+        },
+        shutdown,
+    )));
     drop(client_output);
 
     let finished = tokio::select! {
-        _ = &mut writer_task => FinishedTask::Writer,
-        _ = &mut upstream_task => FinishedTask::Upstream,
-        _ = &mut client_task => FinishedTask::Client,
+        _ = writer_task.handle_mut() => FinishedTask::Writer,
+        _ = upstream_task.handle_mut() => FinishedTask::Upstream,
+        _ = client_task.handle_mut() => FinishedTask::Client,
     };
 
     match finished {
         FinishedTask::Writer => {
             upstream_task.abort();
             client_task.abort();
+            let _ = upstream_task.handle_mut().await;
+            let _ = client_task.handle_mut().await;
         }
         FinishedTask::Upstream => {
             client_task.abort();
-            let _ = client_task.await;
-            let _ = timeout(Duration::from_secs(1), &mut writer_task).await;
-            writer_task.abort();
+            let _ = client_task.handle_mut().await;
+            writer_task
+                .finish_or_abort(CONNECTION_RESPONSE_FLUSH_GRACE)
+                .await;
         }
         FinishedTask::Client => {
             upstream_task.abort();
-            let _ = upstream_task.await;
-            let _ = timeout(Duration::from_secs(1), &mut writer_task).await;
-            writer_task.abort();
+            let _ = upstream_task.handle_mut().await;
+            writer_task
+                .finish_or_abort(CONNECTION_RESPONSE_FLUSH_GRACE)
+                .await;
         }
     }
     Ok(())
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow_and_update() {
+        return;
+    }
+    loop {
+        if shutdown.changed().await.is_err() || *shutdown.borrow_and_update() {
+            return;
+        }
+    }
 }
 
 async fn write_client_output<W>(
@@ -246,8 +393,8 @@ async fn handle_client_frames<R, W>(
     client_output: mpsc::Sender<Vec<u8>>,
     relay: SharedRelay,
     pending_requests: PendingRequests,
-    max_frame_bytes: usize,
-    max_pending_requests: usize,
+    limits: ConnectionLimits,
+    mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -255,14 +402,18 @@ where
 {
     let mut reader = BufReader::new(reader);
     loop {
-        let frame = match read_frame(&mut reader, max_frame_bytes).await {
-            Ok(Some(frame)) => frame,
-            Ok(None) => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                let _ = client_output.send(invalid_frame_response()).await;
-                return Ok(());
-            }
-            Err(error) => return Err(error),
+        let frame = tokio::select! {
+            biased;
+            () = wait_for_shutdown(&mut shutdown) => return Ok(()),
+            result = read_frame(&mut reader, limits.max_frame_bytes) => match result {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    let _ = client_output.send(invalid_frame_response()).await;
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            },
         };
 
         match classify(&frame) {
@@ -273,7 +424,7 @@ where
                         &pending_requests,
                         key,
                         PendingRequest::Upstream,
-                        max_pending_requests,
+                        limits.max_pending_requests,
                     )
                     .await
                     {
@@ -302,7 +453,7 @@ where
                         &pending_requests,
                         key,
                         PendingRequest::Broadcast,
-                        max_pending_requests,
+                        limits.max_pending_requests,
                     )
                     .await
                     {
