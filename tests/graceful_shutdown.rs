@@ -92,10 +92,11 @@ async fn active_broadcast_completes_after_listener_shutdown() {
     }));
 
     let wallet = connect_with_retry(proxy_address).await;
-    let (_upstream, _) = timeout(Duration::from_secs(1), upstream_listener.accept())
+    let (upstream, _) = timeout(Duration::from_secs(1), upstream_listener.accept())
         .await
         .unwrap_or_else(|_| unreachable!("proxy connects to upstream"))
         .unwrap_or_else(|error| unreachable!("upstream accepts: {error}"));
+    let mut upstream_reader = BufReader::new(upstream);
     let (wallet_reader, mut wallet_writer) = tokio::io::split(wallet);
     let mut wallet_reader = BufReader::new(wallet_reader);
 
@@ -108,6 +109,18 @@ async fn active_broadcast_completes_after_listener_shutdown() {
     timeout(Duration::from_secs(1), controlled.started.notified())
         .await
         .unwrap_or_else(|_| unreachable!("relay call starts"));
+
+    let mut leaked_upstream = String::new();
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            upstream_reader.read_line(&mut leaked_upstream)
+        )
+        .await
+        .is_err(),
+        "intercepted broadcast must not reach the query upstream"
+    );
+    assert!(leaked_upstream.is_empty());
 
     assert_eq!(drain.begin_shutdown(), 1);
     shutdown_sender
