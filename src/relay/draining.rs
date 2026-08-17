@@ -140,10 +140,7 @@ impl BroadcastRelay for DrainingRelay {
             if !state.accepting {
                 return Err(RelayError::failed());
             }
-            state.active = state
-                .active
-                .checked_add(1)
-                .ok_or_else(RelayError::failed)?;
+            state.active = state.active.checked_add(1).ok_or_else(RelayError::failed)?;
             state.active
         };
         self.shared.active.send_replace(active);
@@ -234,9 +231,12 @@ mod tests {
         assert_eq!(drain.begin_shutdown(), 1);
         assert_eq!(drain.active_calls(), 1);
         assert!(
-            timeout(Duration::from_millis(20), drain.wait_for_idle(Duration::from_secs(1)))
-                .await
-                .is_err()
+            timeout(
+                Duration::from_millis(20),
+                drain.wait_for_idle(Duration::from_secs(1))
+            )
+            .await
+            .is_err()
         );
 
         inner.release.notify_one();
