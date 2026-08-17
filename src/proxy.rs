@@ -257,10 +257,8 @@ where
     let (client_output, output) = mpsc::channel::<Vec<u8>>(32);
     let pending_requests = Arc::new(Mutex::new(HashMap::new()));
 
-    let mut writer_task = AbortTaskOnDrop::new(tokio::spawn(write_client_output(
-        client_writer,
-        output,
-    )));
+    let mut writer_task =
+        AbortTaskOnDrop::new(tokio::spawn(write_client_output(client_writer, output)));
     let mut upstream_task = AbortTaskOnDrop::new(tokio::spawn(forward_upstream_frames(
         upstream_reader,
         client_output.clone(),
@@ -295,22 +293,14 @@ where
         FinishedTask::Upstream => {
             client_task.abort();
             let _ = client_task.handle_mut().await;
-            let _ = timeout(
-                CONNECTION_RESPONSE_FLUSH_GRACE,
-                writer_task.handle_mut(),
-            )
-            .await;
+            let _ = timeout(CONNECTION_RESPONSE_FLUSH_GRACE, writer_task.handle_mut()).await;
             writer_task.abort();
             let _ = writer_task.handle_mut().await;
         }
         FinishedTask::Client => {
             upstream_task.abort();
             let _ = upstream_task.handle_mut().await;
-            let _ = timeout(
-                CONNECTION_RESPONSE_FLUSH_GRACE,
-                writer_task.handle_mut(),
-            )
-            .await;
+            let _ = timeout(CONNECTION_RESPONSE_FLUSH_GRACE, writer_task.handle_mut()).await;
             writer_task.abort();
             let _ = writer_task.handle_mut().await;
         }
