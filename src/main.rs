@@ -54,7 +54,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let signal_drain = drain.clone();
     let signal_task = tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
-        signal_drain.begin_shutdown();
+        let _ = signal_drain.begin_shutdown();
         let _ = shutdown_sender.send(());
     });
 
