@@ -27,6 +27,11 @@ from typing import Any, Iterable, Mapping, Sequence
 PACKAGE_NAME = "electrum-private-relay"
 METADATA_SCHEMA = "electrum-private-relay/release-candidate/v1"
 WINDOWS_MSVC_REPRO_FLAG = "-Clink-arg=/Brepro"
+SUPPORTED_TARGETS = (
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+)
 CONFIG_CHECK_OUTPUT = (
     "configuration valid; no listener was bound and no network connection was opened"
 )
@@ -126,6 +131,17 @@ def source_date_epoch(root: Path) -> int:
     if epoch < 0:
         raise ReleaseCandidateError("commit timestamp must not be negative")
     return epoch
+
+
+def validate_target(target: str) -> str:
+    """Return a supported native target or fail closed."""
+
+    if target not in SUPPORTED_TARGETS:
+        supported = ", ".join(SUPPORTED_TARGETS)
+        raise ReleaseCandidateError(
+            f"unsupported release-candidate target {target!r}; expected one of: {supported}"
+        )
+    return target
 
 
 def executable_name(target: str) -> str:
@@ -319,6 +335,7 @@ def build_release_candidate(root: Path, target: str, output_dir: Path) -> dict[s
 
     root = root.resolve()
     output_dir = output_dir.resolve()
+    target = validate_target(target)
     version = package_version(root)
     epoch = source_date_epoch(root)
     commit = command_output(["git", "rev-parse", "HEAD"], cwd=root)
@@ -397,7 +414,12 @@ def parse_arguments(arguments: Iterable[str] | None = None) -> argparse.Namespac
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", required=True, help="Rust target triple to build")
+    parser.add_argument(
+        "--target",
+        required=True,
+        choices=SUPPORTED_TARGETS,
+        help="supported native Rust target triple to build",
+    )
     parser.add_argument(
         "--root",
         type=Path,
