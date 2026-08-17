@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from release_candidate_once import (
     CandidatePublicationLock,
@@ -80,6 +81,33 @@ class ReleaseCandidateOnceTests(unittest.TestCase):
                 publish_candidate_evidence(archive, sidecar, output)
             self.assertFalse((output / archive.name).exists())
             self.assertEqual(existing_sidecar.read_bytes(), b"old-checksum")
+
+    def test_partial_copy_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            output = root / "output"
+            source.mkdir()
+            output.mkdir()
+            archive = source / "candidate.zip"
+            sidecar = source / "candidate.zip.sha256"
+            archive.write_bytes(b"archive")
+            sidecar.write_bytes(b"checksum")
+
+            def fail_after_partial_copy(reader: object, writer: object, length: int) -> None:
+                del reader, length
+                writer.write(b"partial")
+                raise OSError("synthetic copy failure")
+
+            with patch(
+                "release_candidate_once.shutil.copyfileobj",
+                side_effect=fail_after_partial_copy,
+            ):
+                with self.assertRaises(OSError):
+                    publish_candidate_evidence(archive, sidecar, output)
+
+            self.assertFalse((output / archive.name).exists())
+            self.assertFalse((output / sidecar.name).exists())
 
     def test_publication_lock_is_exclusive_and_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
