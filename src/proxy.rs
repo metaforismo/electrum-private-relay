@@ -11,7 +11,7 @@ use tokio::{
     },
     net::{TcpListener, TcpStream},
     sync::{Mutex, Semaphore, mpsc, watch},
-    task::JoinSet,
+    task::{JoinHandle, JoinSet},
     time::timeout,
 };
 
@@ -48,6 +48,32 @@ enum FinishedTask {
     Writer,
     Upstream,
     Client,
+}
+
+struct AbortTaskOnDrop<T> {
+    handle: JoinHandle<T>,
+}
+
+impl<T> AbortTaskOnDrop<T> {
+    #[must_use]
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self { handle }
+    }
+
+    fn abort(&self) {
+        self.handle.abort();
+    }
+
+    #[must_use]
+    fn handle_mut(&mut self) -> &mut JoinHandle<T> {
+        &mut self.handle
+    }
+}
+
+impl<T> Drop for AbortTaskOnDrop<T> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,14 +257,17 @@ where
     let (client_output, output) = mpsc::channel::<Vec<u8>>(32);
     let pending_requests = Arc::new(Mutex::new(HashMap::new()));
 
-    let mut writer_task = tokio::spawn(write_client_output(client_writer, output));
-    let mut upstream_task = tokio::spawn(forward_upstream_frames(
+    let mut writer_task = AbortTaskOnDrop::new(tokio::spawn(write_client_output(
+        client_writer,
+        output,
+    )));
+    let mut upstream_task = AbortTaskOnDrop::new(tokio::spawn(forward_upstream_frames(
         upstream_reader,
         client_output.clone(),
         Arc::clone(&pending_requests),
         max_frame_bytes,
-    ));
-    let mut client_task = tokio::spawn(handle_client_frames(
+    )));
+    let mut client_task = AbortTaskOnDrop::new(tokio::spawn(handle_client_frames(
         client_reader,
         upstream_writer,
         client_output.clone(),
@@ -247,31 +276,43 @@ where
         max_frame_bytes,
         max_pending_requests,
         shutdown,
-    ));
+    )));
     drop(client_output);
 
     let finished = tokio::select! {
-        _ = &mut writer_task => FinishedTask::Writer,
-        _ = &mut upstream_task => FinishedTask::Upstream,
-        _ = &mut client_task => FinishedTask::Client,
+        _ = writer_task.handle_mut() => FinishedTask::Writer,
+        _ = upstream_task.handle_mut() => FinishedTask::Upstream,
+        _ = client_task.handle_mut() => FinishedTask::Client,
     };
 
     match finished {
         FinishedTask::Writer => {
             upstream_task.abort();
             client_task.abort();
+            let _ = upstream_task.handle_mut().await;
+            let _ = client_task.handle_mut().await;
         }
         FinishedTask::Upstream => {
             client_task.abort();
-            let _ = client_task.await;
-            let _ = timeout(CONNECTION_RESPONSE_FLUSH_GRACE, &mut writer_task).await;
+            let _ = client_task.handle_mut().await;
+            let _ = timeout(
+                CONNECTION_RESPONSE_FLUSH_GRACE,
+                writer_task.handle_mut(),
+            )
+            .await;
             writer_task.abort();
+            let _ = writer_task.handle_mut().await;
         }
         FinishedTask::Client => {
             upstream_task.abort();
-            let _ = upstream_task.await;
-            let _ = timeout(CONNECTION_RESPONSE_FLUSH_GRACE, &mut writer_task).await;
+            let _ = upstream_task.handle_mut().await;
+            let _ = timeout(
+                CONNECTION_RESPONSE_FLUSH_GRACE,
+                writer_task.handle_mut(),
+            )
+            .await;
             writer_task.abort();
+            let _ = writer_task.handle_mut().await;
         }
     }
     Ok(())
