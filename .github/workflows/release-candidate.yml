@@ -40,12 +40,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test deterministic packager
-        run: ${{ matrix.python }} scripts/test_reproducible_release.py
+      - name: Test release-candidate tooling
+        run: |
+          ${{ matrix.python }} scripts/test_reproducible_release.py
+          ${{ matrix.python }} scripts/test_release_candidate_once.py
 
-      - name: Build twice, check packaged binary, and package
+      - name: Build twice, check packaged binary, and publish once
         run: >-
-          ${{ matrix.python }} scripts/reproducible_release.py
+          ${{ matrix.python }} scripts/release_candidate_once.py
           --target ${{ matrix.target }}
           --output-dir dist
 
