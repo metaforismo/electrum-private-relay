@@ -15,12 +15,14 @@ from reproducible_release import (
     METADATA_SCHEMA,
     PACKAGE_DOCUMENTS,
     ReleaseCandidateError,
+    SUPPORTED_TARGETS,
     create_archive,
     normalized_zip_datetime,
     packaged_runtime_environment,
     reproducibility_rustflags,
     sha256_file,
     validate_clean_output,
+    validate_target,
     write_checksum_sidecar,
 )
 
@@ -47,6 +49,13 @@ class ReproducibleReleaseTests(unittest.TestCase):
             reproducibility_rustflags("x86_64-unknown-linux-gnu", existing),
             existing,
         )
+
+    def test_release_target_allowlist_fails_closed(self) -> None:
+        for target in SUPPORTED_TARGETS:
+            self.assertEqual(validate_target(target), target)
+        for target in ("../../escape", "wasm32-wasi", "x86_64-unknown-linux-musl"):
+            with self.assertRaises(ReleaseCandidateError):
+                validate_target(target)
 
     def test_packaged_runtime_environment_removes_epr_configuration(self) -> None:
         environment = {
