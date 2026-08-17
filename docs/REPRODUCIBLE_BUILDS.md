@@ -34,6 +34,14 @@ exact stdout, and rejects any stderr output. `--check-config` is the existing
 offline path: repository tests prove it exits before binding a listener or
 opening an upstream, SOCKS, or relay connection.
 
+The supported publication entrypoint is `scripts/release_candidate_once.py`.
+It invokes the deterministic packager inside a private temporary directory,
+serializes publication with a per-target exclusive lock, and publishes the final
+ZIP plus its SHA-256 sidecar with exclusive-create semantics. If either final
+path already exists, the command fails before the expensive build begins. A
+failed or interrupted copy removes only partial evidence created by that
+invocation and never replaces pre-existing candidate files.
+
 A successful job packages one executable with public documentation and a
 `BUILD-METADATA.json` file. ZIP members are sorted, receive one normalized UTC
 commit timestamp, and use fixed file permissions. A separate `.sha256` sidecar
@@ -58,6 +66,11 @@ executable bytes and both executables passed the packaged checks. It does not:
   the candidate workflow;
 - certify packaged Electrum, Sparrow, or BlueWallet applications; or
 - replace an independent Bitcoin/network-security review.
+
+Create-once publication protects existing local evidence from accidental or
+concurrent replacement by this tooling. It is not an immutable filesystem,
+signature scheme, or defense against an operator who intentionally deletes or
+modifies files outside the tool.
 
 Equal output inside one environment can repeat the same compromised toolchain.
 Independent reproduction and external review remain stable-release gates.
@@ -97,18 +110,22 @@ Use a reviewed checkout and the repository's pinned Rust toolchain:
 
 ```console
 python3 scripts/test_reproducible_release.py
-python3 scripts/reproducible_release.py \
+python3 scripts/test_release_candidate_once.py
+python3 scripts/release_candidate_once.py \
   --target x86_64-unknown-linux-gnu \
   --output-dir dist
 ```
 
 On Apple Silicon use `aarch64-apple-darwin`. On 64-bit Windows use
-`x86_64-pc-windows-msvc` and invoke the script with `python` when that is the
+`x86_64-pc-windows-msvc` and invoke the scripts with `python` when that is the
 local launcher name.
 
 The command exits unsuccessfully when the builds differ, a packaged check
-changes or writes to stderr, a required public document is missing, or the
-archive/checksum cannot be written.
+changes or writes to stderr, a required public document is missing, either final
+candidate-evidence path already exists, another publication for the same target
+holds the lock, or publication cannot complete. To intentionally create a fresh
+candidate for the same commit and target, choose a new empty output directory or
+move the prior evidence first rather than overwriting it in place.
 
 ## Verify a downloaded candidate
 
