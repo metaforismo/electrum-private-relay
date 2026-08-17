@@ -31,6 +31,8 @@ BITCOIN_CORE_IMAGE = (
     "sha256:2b1d8a8d23c67b426afa8cd5b3ffd66b8c4ebbbceef3e214df8627aaead1f517"
 )
 RPC_USER = "epr-regtest"
+DEFAULT_RPC_TIMEOUT_SECONDS = 5.0
+BLOCK_GENERATION_TIMEOUT_SECONDS = 60.0
 
 
 def command(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -92,7 +94,13 @@ class BitcoinCoreRegtest:
         logs = command("docker", "logs", self.name, check=False)
         raise RuntimeError(f"Bitcoin Core RPC did not become ready:\n{logs.stdout}{logs.stderr}")
 
-    def rpc(self, method: str, *params: Any, wallet: str | None = None) -> Any:
+    def rpc(
+        self,
+        method: str,
+        *params: Any,
+        wallet: str | None = None,
+        timeout_seconds: float = DEFAULT_RPC_TIMEOUT_SECONDS,
+    ) -> Any:
         wallet_path = ""
         if wallet is not None:
             wallet_path = f"/wallet/{urllib.parse.quote(wallet, safe='')}"
@@ -116,10 +124,14 @@ class BitcoinCoreRegtest:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 payload = json.load(response)
         except urllib.error.HTTPError as error:
             payload = json.loads(error.read())
+        except TimeoutError as error:
+            raise TimeoutError(
+                f"Bitcoin Core RPC {method} exceeded {timeout_seconds:g} seconds"
+            ) from error
         if payload.get("error") is not None:
             raise RuntimeError(f"Bitcoin Core RPC {method} failed: {payload['error']}")
         return payload.get("result")
@@ -143,7 +155,12 @@ def build_signed_transaction(core: BitcoinCoreRegtest) -> tuple[str, str]:
     wallet = "epr"
     core.rpc("createwallet", wallet)
     mining_address = core.rpc("getnewaddress", wallet=wallet)
-    core.rpc("generatetoaddress", 101, mining_address)
+    core.rpc(
+        "generatetoaddress",
+        101,
+        mining_address,
+        timeout_seconds=BLOCK_GENERATION_TIMEOUT_SECONDS,
+    )
     destination = core.rpc("getnewaddress", wallet=wallet)
     raw = core.rpc("createrawtransaction", [], {destination: 1})
     funded = core.rpc("fundrawtransaction", raw, wallet=wallet)
