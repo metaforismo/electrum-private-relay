@@ -42,6 +42,7 @@ impl RelayDrainHandle {
     ///
     /// Calls that acquired admission before this method remain active; calls
     /// that race after it fail closed through the ordinary relay error path.
+    #[must_use]
     pub fn begin_shutdown(&self) -> usize {
         let active = {
             let mut state = self.shared.lock();
@@ -262,7 +263,7 @@ mod tests {
         timeout(Duration::from_secs(1), inner.started.notified())
             .await
             .unwrap_or_else(|_| unreachable!("relay call starts"));
-        drain.begin_shutdown();
+        let _ = drain.begin_shutdown();
 
         assert!(!drain.wait_for_idle(Duration::from_millis(20)).await);
         assert_eq!(drain.active_calls(), 1);
