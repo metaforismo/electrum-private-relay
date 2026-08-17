@@ -125,7 +125,7 @@ async fn active_broadcast_completes_after_listener_shutdown() {
     assert_eq!(drain.begin_shutdown(), 1);
     shutdown_sender
         .send(())
-        .unwrap_or_else(|_| unreachable!("server still waits for shutdown"));
+        .unwrap_or_else(|()| unreachable!("server still waits for shutdown"));
     timeout(Duration::from_secs(1), server)
         .await
         .unwrap_or_else(|_| unreachable!("listener stops promptly"))
