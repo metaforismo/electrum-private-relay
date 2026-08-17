@@ -32,6 +32,8 @@ stable release.
 - Native Linux, macOS, and Windows release-candidate double builds with raw
   executable comparison, deterministic ZIPs, SHA-256 sidecars, packaged CLI
   checks, and main-branch SLSA provenance attestations.
+- Create-once release-candidate publication with per-target locking, exclusive
+  ZIP/sidecar creation, and rollback of partial evidence on interrupted copies.
 - A frozen first stable-release audit scope covering implementation, evidence,
   supply chain, deployment claims, and reviewer deliverables.
 - Initial architecture, threat model, Tor deployment, and contributor guidance.
