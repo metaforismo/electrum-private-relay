@@ -173,11 +173,7 @@ async fn stuck_broadcast_is_cancelled_after_the_bounded_connection_deadline() {
         .local_addr()
         .unwrap_or_else(|error| unreachable!("upstream address exists: {error}"));
     let proxy_address = unused_loopback_address();
-    let config = test_config(
-        proxy_address,
-        upstream_address,
-        Duration::from_millis(20),
-    );
+    let config = test_config(proxy_address, upstream_address, Duration::from_millis(20));
 
     let controlled = Arc::new(ControlledRelay::default());
     let inner: SharedRelay = controlled.clone();
