@@ -2,14 +2,19 @@
 
 #![forbid(unsafe_code)]
 
-use std::{process::ExitCode, sync::Arc};
+use std::{process::ExitCode, sync::Arc, time::Duration};
 
 use clap::Parser;
 use electrum_private_relay::{
     config::{Cli, Config, RelayMode},
     proxy::serve_until,
-    relay::{LimitedRelay, RejectRelay, SharedRelay, SocksElectrumRelay},
+    relay::{
+        DrainingRelay, LimitedRelay, RejectRelay, SharedRelay, SocksElectrumRelay,
+    },
 };
+use tokio::sync::oneshot;
+
+const SHUTDOWN_RESPONSE_FLUSH_GRACE: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -43,14 +48,39 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )),
     };
     let relay: SharedRelay = Arc::new(LimitedRelay::new(relay, config.max_concurrent_broadcasts));
+    let (relay, drain) = DrainingRelay::new(relay);
+    let relay: SharedRelay = Arc::new(relay);
+    let maximum_drain = config.relay_timeout;
+
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let signal_drain = drain.clone();
+    let signal_task = tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        signal_drain.begin_shutdown();
+        let _ = shutdown_sender.send(());
+    });
 
     println!(
         "electrum-private-relay listening on {}; sensitive request logging is disabled",
         config.listen
     );
-    serve_until(config, relay, async {
-        let _ = tokio::signal::ctrl_c().await;
+    let server_result = serve_until(config, relay, async {
+        let _ = shutdown_receiver.await;
     })
-    .await?;
+    .await;
+
+    if let Err(error) = server_result {
+        signal_task.abort();
+        return Err(Box::new(error));
+    }
+    let _ = signal_task.await;
+
+    if drain.wait_for_idle(maximum_drain).await {
+        tokio::time::sleep(SHUTDOWN_RESPONSE_FLUSH_GRACE).await;
+    } else {
+        eprintln!(
+            "shutdown relay drain expired; remaining private relay work will be cancelled without fallback"
+        );
+    }
     Ok(())
 }
