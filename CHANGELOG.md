@@ -29,4 +29,9 @@ stable release.
 - Docker-backed Bitcoin Core 30.2 regtest broadcast gate.
 - Scheduled and manually runnable real Tor v3 onion smoke test.
 - Coverage-guided fuzz target and CI campaigns for wallet frame classification.
+- Native Linux, macOS, and Windows release-candidate double builds with raw
+  executable comparison, deterministic ZIPs, SHA-256 sidecars, packaged CLI
+  checks, and main-branch SLSA provenance attestations.
+- A frozen first stable-release audit scope covering implementation, evidence,
+  supply chain, deployment claims, and reviewer deliverables.
 - Initial architecture, threat model, Tor deployment, and contributor guidance.
