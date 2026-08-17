@@ -112,6 +112,13 @@ subscribed by each connection task. Once shutdown begins:
    shutdown signal before reading another wallet request; and
 4. the connection writer is given its existing one-second bounded flush window.
 
+Each connection owns its writer, upstream-reader, and client-reader subtasks
+through abort-on-drop handles. Normal paths explicitly abort and await the
+siblings that are no longer needed. If the outer connection task is itself
+cancelled at the shutdown deadline, dropping those handles requests cancellation
+of all three subtasks instead of detaching them. This also releases any
+`DrainingRelay` active-call guard held by a stuck client subtask.
+
 The server waits for the entire supervised connection set, not merely for the
 relay active-count to reach zero. The outer deadline is the configured relay
 timeout plus one second of response-flush headroom. If every task completes, the
@@ -121,11 +128,11 @@ runtime continues. Cancellation never invokes a different adapter, retries a
 submission, writes the transaction to the query upstream, or fans out.
 
 This reduces two avoidable ambiguities in the former lifecycle: connection tasks
-are no longer detached when the listener stops, and the process no longer relies
-on an unconditional one-second sleep after the relay count becomes idle. It is
-still not an atomic acknowledgement protocol. `SIGKILL`, power loss, kernel or
-process failure, blocked wallet output, and provider-side acceptance without a
-usable response remain unknown outcomes.
+and their subtasks are no longer detached when the listener stops, and the
+process no longer relies on an unconditional one-second sleep after the relay
+count becomes idle. It is still not an atomic acknowledgement protocol.
+`SIGKILL`, power loss, kernel or process failure, blocked wallet output, and
+provider-side acceptance without a usable response remain unknown outcomes.
 
 ## Security-relevant design decisions
 
@@ -134,7 +141,8 @@ usable response remain unknown outcomes.
 - No queue for relay overload.
 - No unbounded simultaneous relay submissions or aggregate relay input payload.
 - No new relay admission after graceful shutdown begins.
-- No detached accepted-connection tasks during graceful shutdown.
+- No detached accepted-connection or per-connection I/O tasks during graceful
+  shutdown.
 - No unbounded shutdown wait for a stalled relay or connection writer.
 - No request bodies or identifiers in application logs.
 - No unsolicited query-upstream responses or response-ID collisions.
