@@ -74,11 +74,24 @@ def require_absent(paths: Iterable[Path]) -> None:
             )
 
 
+def remove_if_created(path: Path, created: bool) -> None:
+    """Best-effort rollback for a path this invocation created."""
+
+    if not created:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def copy_exclusive(source: Path, destination: Path) -> None:
     """Copy one file to a newly created destination without overwrite."""
 
+    created = False
     try:
         with source.open("rb") as reader, destination.open("xb") as writer:
+            created = True
             shutil.copyfileobj(reader, writer, length=1024 * 1024)
             writer.flush()
             os.fsync(writer.fileno())
@@ -86,6 +99,9 @@ def copy_exclusive(source: Path, destination: Path) -> None:
         raise ReleaseCandidateError(
             f"refusing to overwrite existing candidate evidence: {destination.name}"
         ) from error
+    except BaseException:
+        remove_if_created(destination, created)
+        raise
 
 
 def publish_candidate_evidence(
@@ -105,12 +121,9 @@ def publish_candidate_evidence(
         created.append(destination_archive)
         copy_exclusive(source_sidecar, destination_sidecar)
         created.append(destination_sidecar)
-    except Exception:
+    except BaseException:
         for path in reversed(created):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+            remove_if_created(path, True)
         raise
 
     return destination_archive, destination_sidecar
