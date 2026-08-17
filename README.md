@@ -1,6 +1,7 @@
 # electrum-private-relay
 
 [![CI](https://github.com/metaforismo/electrum-private-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/metaforismo/electrum-private-relay/actions/workflows/ci.yml)
+[![Release candidate](https://github.com/metaforismo/electrum-private-relay/actions/workflows/release-candidate.yml/badge.svg)](https://github.com/metaforismo/electrum-private-relay/actions/workflows/release-candidate.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 An experimental, self-hosted Electrum protocol proxy that separates wallet
@@ -85,9 +86,11 @@ beta and requires a client code, so the core proxy does not depend on it.
 
 ## Build and test
 
-Requirements: Rust 1.96.0 and Cargo.
+Requirements: Rust 1.96.0, Cargo, and Python 3.11 or newer for release-candidate
+packaging.
 
 ```bash
+python3 scripts/test_reproducible_release.py
 cargo fmt --all -- --check
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
@@ -108,6 +111,17 @@ transaction into a disposable Bitcoin Core mempool. A separate scheduled smoke
 routes a broadcast through a real ephemeral v3 onion, and the parser has a
 coverage-guided fuzz target with PR smoke and weekly campaigns. See
 [integration testing](docs/testing.md) for exact commands and claim boundaries.
+
+The `Release candidate` workflow performs two clean native builds on Linux,
+macOS, and Windows, requires each target's executables to be byte-identical,
+runs exact packaged `--version` and offline `--check-config` checks on both, and
+produces deterministic ZIPs with SHA-256 sidecars. Main-branch candidate ZIPs
+also receive GitHub SLSA provenance attestations.
+
+That is same-runner double-build evidence, not a complete reproducible-build or
+artifact-authenticity proof. It does not replace independently administered
+reproduction, packaged-wallet certification, or external review. See
+[release-candidate builds and provenance](docs/REPRODUCIBLE_BUILDS.md).
 
 ## Run safely
 
@@ -203,8 +217,10 @@ Implemented:
 - unit, black-box CLI, and in-memory integration tests;
 - source-derived wire profiles for Electrum, Sparrow, and BlueWallet;
 - a real Bitcoin Core regtest broadcast gate;
-- an opt-in and scheduled real Tor v3 onion smoke test; and
-- a coverage-guided Electrum frame-classifier fuzz target.
+- an opt-in and scheduled real Tor v3 onion smoke test;
+- a coverage-guided Electrum frame-classifier fuzz target; and
+- native same-runner double-build release candidates with checksums, public
+  metadata, and main-branch provenance attestations.
 
 Tracked release gates:
 
@@ -220,7 +236,10 @@ and tenant isolation are not supported by the current self-hosted onion-service
 scope. Adding any of them requires a separate threat model and security review.
 
 See the [architecture](docs/architecture.md), [threat model](docs/threat-model.md),
-and [relay adapter contract](docs/relay-adapters.md) before deploying.
+[first stable-release audit scope](docs/AUDIT_SCOPE.md),
+[release-candidate provenance boundary](docs/REPRODUCIBLE_BUILDS.md), and
+[relay adapter contract](docs/relay-adapters.md) before deploying or assessing
+the project.
 
 ## Contributing
 

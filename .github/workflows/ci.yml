@@ -29,6 +29,9 @@ jobs:
           toolchain: 1.96.0
           components: clippy,rustfmt
 
+      - name: Test deterministic release packager
+        run: python3 scripts/test_reproducible_release.py
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
