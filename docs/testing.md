@@ -4,6 +4,32 @@ The repository separates deterministic protocol checks from environment-backed
 integration checks. None of these tests uses mainnet, real funds, wallet secrets,
 or third-party Electrum infrastructure.
 
+## Native release candidates
+
+`scripts/reproducible_release.py` performs two clean native release builds in
+separate target directories, requires byte-identical executables, removes all
+inherited `EPR_*` variables, and runs exact `--version` and `--check-config`
+checks on both binaries. It then creates a deterministic ZIP and SHA-256 sidecar.
+
+The GitHub workflow exercises Linux x86_64, Apple Silicon macOS, and Windows
+x86_64. Main-branch candidate ZIPs receive GitHub SLSA provenance attestations.
+This is same-runner double-build evidence, not independent cross-machine
+reproducibility or a stable release.
+
+Run the unit tests and one native candidate locally with:
+
+```bash
+python3 scripts/test_reproducible_release.py
+python3 scripts/reproducible_release.py \
+  --target x86_64-unknown-linux-gnu \
+  --output-dir dist
+```
+
+See [release-candidate builds and provenance](REPRODUCIBLE_BUILDS.md) for the
+artifact contents, verification commands, and assurance boundary. See the
+[first stable-release audit scope](AUDIT_SCOPE.md) for the evidence expected on
+an externally reviewed commit.
+
 ## Wallet protocol profiles
 
 `tests/wallet_protocol_compat.py` replays newline-delimited request sequences
