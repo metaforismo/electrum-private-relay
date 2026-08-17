@@ -50,6 +50,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
     values use unambiguous `host:port` syntax with strict IP or DNS host grammar.
 12. Obvious listener loops and obvious reuse of the query upstream as the
     private relay are rejected before any runtime socket is opened.
+13. Graceful shutdown rejects new relay admission, bounds the drain wait, and
+    never turns cancellation or timeout into retry, fallback, or fan-out.
 
 ## Attacker goals considered
 
@@ -64,6 +66,8 @@ The proxy never receives wallet seeds, private keys, or unsigned signing intent.
 - Inject an unsolicited query-upstream response that impersonates broadcast
   success.
 - Cause a private route failure to downgrade into public propagation.
+- Exploit process shutdown to admit another relay call, duplicate an existing
+  submission, or silently redirect it after cancellation.
 - Recover sensitive wallet or transaction data from logs or crash output.
 - Reach an unintentionally public unauthenticated listener.
 - Smuggle a URL, credential, path, malformed DNS name, ambiguous IPv6 spelling,
@@ -120,6 +124,28 @@ hold additional copies or overhead. A compromised or slow relay can still
 consume all permitted slots until the configured relay timeout expires, causing
 temporary fail-closed unavailability rather than unbounded growth.
 
+## Graceful shutdown boundary
+
+The `Ctrl-C` path changes relay admission under one mutex before stopping the
+listener. A call that incremented the active count first remains admitted; a
+call that reaches the gate after shutdown starts receives a generic relay error.
+This ordering prevents a check-then-increment race from admitting untracked work.
+
+After the server loop drops the listener, detached connection tasks remain alive
+inside the Tokio runtime. The process waits for the tracked active count to reach
+zero for at most the configured relay timeout. When it reaches zero, one second
+of additional headroom is reserved for the caller to construct and flush the
+wallet response. When it does not, runtime teardown cancels the remaining task.
+Neither outcome invokes another adapter or the query upstream.
+
+This is a best-effort reduction of local cancellation ambiguity, not an atomic
+network protocol. A provider may accept a transaction immediately before a
+socket error or process failure, and the wallet may still miss the result after
+`SIGKILL`, power loss, kernel failure, blocked output, or a crash outside the
+controlled `Ctrl-C` path. Operators must treat such cases as an unknown outcome
+and inspect their selected relay or mempool through an independent safe channel;
+they must not assume failure and blindly resubmit through a public route.
+
 ## Out of scope for the current milestone
 
 - Compromise of the operator's host, wallet, Tor daemon, upstream, or relay.
@@ -132,6 +158,8 @@ temporary fail-closed unavailability rather than unbounded growth.
 - Validating Bitcoin consensus or mempool policy locally.
 - Authenticating DNS or proving that two differently named endpoints cannot
   resolve to the same destination.
+- Guaranteed response delivery after abrupt process or operating-system
+  termination.
 
 ## Validation strategy
 
@@ -141,6 +169,11 @@ temporary fail-closed unavailability rather than unbounded growth.
 - Controlled asynchronous relay tests separately saturate the request-slot and
   actual-payload-byte budgets, prove the wrapped adapter is not called, release
   the held permits, and prove the admitted request completes.
+- Lifecycle tests prove shutdown rejects a new relay call, waits for a call that
+  was already admitted, and expires its wait for a deliberately stuck relay.
+- A TCP integration test stops the listener while a controlled broadcast is
+  active, then proves the admitted call completes and its correlated txid still
+  reaches the wallet without appearing at the query upstream.
 - Black-box CLI tests prove `--check-config` exits successfully without network
   setup and fails closed on representative unsafe, ambiguous, or zero-valued
   endpoint and resource configurations.

@@ -91,12 +91,38 @@ standard Electrum broadcast method, validates the response ID and transaction ID
 and then drops the connection. Both admission permits remain held until that
 call returns or reaches its configured timeout.
 
+### Process shutdown
+
+The selected relay is also wrapped in a race-free lifecycle gate. On `Ctrl-C`,
+the process atomically stops admitting new private relay calls before it signals
+the server loop to stop. The listener is then dropped, so no new wallet
+connections are accepted. A broadcast that entered the lifecycle gate before
+that transition remains admitted; a later broadcast receives the ordinary
+generic private-relay failure and is never redirected elsewhere.
+
+Connection tasks are independent Tokio tasks. After the listener stops, the
+runtime remains alive while the lifecycle handle waits for admitted relay calls
+to return, bounded by the configured relay timeout. If they all return, the
+process keeps one additional second of response-flush headroom so the connection
+task can serialize the relay result and write it to the wallet. Idle query
+connections and other remaining tasks end when that bounded shutdown phase
+finishes.
+
+If the relay drain reaches its timeout, the process reports a non-sensitive
+shutdown error and exits. Remaining work is cancelled by runtime teardown; no
+retry, query-upstream fallback, or multi-relay fan-out is attempted. This reduces
+avoidable local cancellation ambiguity, but it cannot guarantee delivery after
+`SIGKILL`, power loss, operating-system failure, or a relay that accepted a
+transaction but never returned a usable response.
+
 ## Security-relevant design decisions
 
 - No automatic fallback from a private relay to the query upstream.
 - No fan-out to multiple relay providers.
 - No queue for relay overload.
 - No unbounded simultaneous relay submissions or aggregate relay input payload.
+- No new relay admission after graceful shutdown begins.
+- No unbounded shutdown wait for a stalled relay.
 - No request bodies or identifiers in application logs.
 - No unsolicited query-upstream responses or response-ID collisions.
 - No unbounded frame reads.
