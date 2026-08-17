@@ -96,6 +96,12 @@ enum Reservation {
     LimitExceeded,
 }
 
+#[derive(Clone, Copy)]
+struct ConnectionLimits {
+    max_frame_bytes: usize,
+    max_pending_requests: usize,
+}
+
 type PendingRequests = Arc<Mutex<HashMap<String, PendingRequest>>>;
 
 #[derive(Deserialize)]
@@ -278,8 +284,10 @@ where
         client_output.clone(),
         relay,
         pending_requests,
-        max_frame_bytes,
-        max_pending_requests,
+        ConnectionLimits {
+            max_frame_bytes,
+            max_pending_requests,
+        },
         shutdown,
     )));
     drop(client_output);
@@ -385,8 +393,7 @@ async fn handle_client_frames<R, W>(
     client_output: mpsc::Sender<Vec<u8>>,
     relay: SharedRelay,
     pending_requests: PendingRequests,
-    max_frame_bytes: usize,
-    max_pending_requests: usize,
+    limits: ConnectionLimits,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()>
 where
@@ -398,7 +405,7 @@ where
         let frame = tokio::select! {
             biased;
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
-            result = read_frame(&mut reader, max_frame_bytes) => match result {
+            result = read_frame(&mut reader, limits.max_frame_bytes) => match result {
                 Ok(Some(frame)) => frame,
                 Ok(None) => return Ok(()),
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {
@@ -417,7 +424,7 @@ where
                         &pending_requests,
                         key,
                         PendingRequest::Upstream,
-                        max_pending_requests,
+                        limits.max_pending_requests,
                     )
                     .await
                     {
@@ -446,7 +453,7 @@ where
                         &pending_requests,
                         key,
                         PendingRequest::Broadcast,
-                        max_pending_requests,
+                        limits.max_pending_requests,
                     )
                     .await
                     {
