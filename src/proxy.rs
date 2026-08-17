@@ -68,6 +68,13 @@ impl<T> AbortTaskOnDrop<T> {
     fn handle_mut(&mut self) -> &mut JoinHandle<T> {
         &mut self.handle
     }
+
+    async fn finish_or_abort(&mut self, maximum_wait: Duration) {
+        if timeout(maximum_wait, self.handle_mut()).await.is_err() {
+            self.abort();
+            let _ = self.handle_mut().await;
+        }
+    }
 }
 
 impl<T> Drop for AbortTaskOnDrop<T> {
@@ -293,16 +300,16 @@ where
         FinishedTask::Upstream => {
             client_task.abort();
             let _ = client_task.handle_mut().await;
-            let _ = timeout(CONNECTION_RESPONSE_FLUSH_GRACE, writer_task.handle_mut()).await;
-            writer_task.abort();
-            let _ = writer_task.handle_mut().await;
+            writer_task
+                .finish_or_abort(CONNECTION_RESPONSE_FLUSH_GRACE)
+                .await;
         }
         FinishedTask::Client => {
             upstream_task.abort();
             let _ = upstream_task.handle_mut().await;
-            let _ = timeout(CONNECTION_RESPONSE_FLUSH_GRACE, writer_task.handle_mut()).await;
-            writer_task.abort();
-            let _ = writer_task.handle_mut().await;
+            writer_task
+                .finish_or_abort(CONNECTION_RESPONSE_FLUSH_GRACE)
+                .await;
         }
     }
     Ok(())
